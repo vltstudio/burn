@@ -556,6 +556,8 @@
   pointer-events: none;
 }
 
+/* The cover is there the moment the pane opens: no fade, so a new track never
+   flashes dark before the colours arrive. */
 .full-player .fp-karaoke-glow span {
   position: absolute;
   inset: 0;
@@ -564,7 +566,6 @@
   filter: blur(78px) saturate(1.45);
   opacity: 0.75;
   transform: scale(1.15);
-  animation: fp-lyric-glow 900ms ease-out both;
 }
 
 .full-player .fp-karaoke-glow::after {
@@ -574,11 +575,6 @@
   background:
     radial-gradient(120% 85% at 50% 34%, rgba(10, 8, 7, 0.18), rgba(10, 8, 7, 0.88) 78%),
     linear-gradient(180deg, rgba(12, 10, 9, 0.42), rgba(12, 10, 9, 0.94));
-}
-
-@keyframes fp-lyric-glow {
-  from { opacity: 0; }
-  to { opacity: 0.75; }
 }
 
 .full-player .fp-karaoke-head,
