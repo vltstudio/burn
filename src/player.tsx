@@ -13,9 +13,14 @@ import type { MediaItem } from "./types";
 
 export type RepeatMode = "off" | "all" | "one";
 
+interface ClipPlayback {
+  playing: boolean;
+  duration: number | null;
+}
+
 export interface ClipAudioHandoff {
   snapshot: () => { position: number; playing: boolean; volume: number; muted: boolean } | null;
-  takeOver: () => { sync: (position: number) => void; release: () => void } | null;
+  takeOver: () => { sync: (position: number, playback?: ClipPlayback) => void; release: () => void } | null;
 }
 
 interface PlayerApi {
@@ -27,6 +32,7 @@ interface PlayerApi {
   loading: boolean;
   progress: number;
   duration: number;
+  clipPlayback: ClipPlayback | null;
   volume: number;
   muted: boolean;
   shuffle: boolean;
@@ -49,7 +55,7 @@ interface PlayerApi {
 }
 
 const PlayerContext = createContext<PlayerApi | null>(null);
-type PlaybackApi = Omit<PlayerApi, "progress" | "duration" | "volume" | "muted">;
+type PlaybackApi = Omit<PlayerApi, "progress" | "duration" | "clipPlayback" | "volume" | "muted">;
 const PlaybackContext = createContext<PlaybackApi | null>(null);
 
 export function usePlayer(): PlayerApi {
@@ -97,6 +103,7 @@ export function PlayerProvider({ children, onToast }: Props) {
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [duration, setDuration] = useState(0);
+  const [clipPlayback, setClipPlayback] = useState<ClipPlayback | null>(null);
   const [volume, setVolumeState] = useState(() => {
     const stored = Number(window.localStorage.getItem("ytmusicdt.volume") ?? 0.85);
     return Number.isFinite(stored) && stored >= 0 ? Math.min(stored, 1) : 0.85;
@@ -174,6 +181,7 @@ export function PlayerProvider({ children, onToast }: Props) {
       if (!item.videoId && !item.localPath) return;
       const token = ++requestRef.current;
       clipLeaseRef.current = null;
+      setClipPlayback(null);
       cancelRadio();
       disposeAudioRef.current?.();
       const audio = new Audio();
@@ -558,18 +566,24 @@ export function PlayerProvider({ children, onToast }: Props) {
         playRequestedRef.current = false;
         audio?.pause();
         setPlaying(false);
+        setClipPlayback({ playing: true, duration: null });
         return {
-          sync: (seconds) => {
+          sync: (seconds, playback) => {
             if (clipLeaseRef.current !== lease || !Number.isFinite(seconds) || seconds < 0) return;
             position = audio && Number.isFinite(audio.duration) ? Math.min(seconds, audio.duration) : seconds;
-            setProgress(position);
+            setProgress(seconds);
+            if (playback) {
+              setClipPlayback((current) => current?.playing === playback.playing && current.duration === playback.duration
+                ? current : playback);
+            }
           },
           release: () => {
             if (clipLeaseRef.current !== lease) return;
             clipLeaseRef.current = null;
+            setClipPlayback(null);
             if (!audio || requestRef.current !== token || audioRef.current !== audio) return;
-            if (audio.src && position !== audio.currentTime) {
-              audio.currentTime = position;
+            if (audio.src) {
+              if (position !== audio.currentTime) audio.currentTime = position;
               setProgress(audio.currentTime);
             }
             if (!resume) return;
@@ -690,8 +704,8 @@ export function PlayerProvider({ children, onToast }: Props) {
   );
 
   const value = useMemo<PlayerApi>(
-    () => ({ ...playback, progress, duration, volume, muted }),
-    [playback, progress, duration, volume, muted],
+    () => ({ ...playback, progress, duration, clipPlayback, volume, muted }),
+    [playback, progress, duration, clipPlayback, volume, muted],
   );
 
   return (

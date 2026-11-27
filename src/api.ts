@@ -8,6 +8,9 @@ import type {
   AuthPoll,
   AuthStatus,
   Detail,
+  DiscordActivity,
+  DiscordPreferences,
+  DiscordPresenceView,
   Favorite,
   FavoritesSyncReport,
   LocalAddRootResult,
@@ -127,6 +130,10 @@ export const api = {
   authSignOut: () => call<void>("auth_sign_out"),
   settingsGet: () => call<Settings>("settings_get"),
   settingsSet: (settings: Settings) => call<Settings>("settings_set", { settings }),
+  discordPresenceGet: () => call<DiscordPresenceView>("discord_presence_get"),
+  discordPresenceConfigure: (preferences: DiscordPreferences) =>
+    call<DiscordPreferences>("discord_presence_configure", { preferences }),
+  discordPresenceSync: (activity: DiscordActivity | null) => call<void>("discord_presence_sync", { activity }),
   streamUrl: (videoId: string, refresh = false) => call<string>("stream_url", { videoId, refresh }),
   openUrl: (url: string) => openUrl(url),
 };

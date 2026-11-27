@@ -2,13 +2,15 @@ import { useEffect, useRef, useState } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open as openFolderDialog } from "@tauri-apps/plugin-dialog";
 import { getVersion } from "@tauri-apps/api/app";
-import { Check, FolderOpen, Globe2, Palette, Plus, RefreshCw, SlidersHorizontal, UserRound, Volume2, VolumeX, X } from "lucide-react";
+import { Check, FolderOpen, Globe2, MessagesSquare, Palette, Plus, RefreshCw, SlidersHorizontal, UserRound, Volume2, VolumeX, X } from "lucide-react";
 import { api, ApiFailure } from "../api";
 import { usePlayer } from "../player";
 import { applyPalette, PALETTES, paletteOf } from "../theme";
 import type { AuthStatus, LocalStatus, Settings } from "../types";
 import { SettingSection } from "./SettingSection";
 import { UpdateSettings } from "./UpdateSettings";
+import { DiscordSettings } from "./DiscordSettings";
+import type { useDiscordPresence } from "../discord-presence";
 
 interface Props {
   open: boolean;
@@ -17,6 +19,7 @@ interface Props {
   onClose: () => void;
   onAuthChanged: (status?: AuthStatus) => void;
   onToast: (message: string, kind?: "info" | "error") => void;
+  discord: ReturnType<typeof useDiscordPresence>;
 }
 
 const LANGUAGES: Array<{ value: string; label: string }> = [
@@ -36,6 +39,7 @@ const SETTINGS_TABS = [
   { id: "appearance", label: "Оформление", icon: Palette },
   { id: "local", label: "Локальная музыка", icon: FolderOpen },
   { id: "playback", label: "Воспроизведение", icon: SlidersHorizontal },
+  { id: "discord", label: "Discord", icon: MessagesSquare },
   { id: "catalog", label: "Язык каталога", icon: Globe2 },
   { id: "updates", label: "Обновления", icon: RefreshCw },
 ] as const;
@@ -71,7 +75,7 @@ function PlaybackSettings() {
   );
 }
 
-export function SettingsDialog({ open, initialTab, auth, onClose, onAuthChanged, onToast }: Props) {
+export function SettingsDialog({ open, initialTab, auth, onClose, onAuthChanged, onToast, discord }: Props) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [tab, setTab] = useState<SettingsTab>(initialTab);
   const [pending, setPending] = useState(false);
@@ -344,7 +348,7 @@ export function SettingsDialog({ open, initialTab, auth, onClose, onAuthChanged,
 
       <div className="settings-layout">
         <nav className="settings-nav" aria-label="Разделы настроек">
-          {SETTINGS_TABS.map(({ id, label, icon: Icon }) => (
+          {SETTINGS_TABS.filter(({ id }) => id !== "discord" || discord.supported).map(({ id, label, icon: Icon }) => (
             <button
               key={id}
               className="settings-nav-item"
@@ -430,6 +434,7 @@ export function SettingsDialog({ open, initialTab, auth, onClose, onAuthChanged,
             </SettingSection>
           ) : null}
           {tab === "playback" ? <PlaybackSettings /> : null}
+          {tab === "discord" && discord.supported ? <DiscordSettings {...discord} /> : null}
           {tab === "updates" && open ? <UpdateSettings /> : null}
           {tab === "local" ? (
             <SettingSection title="Локальная музыка">

@@ -86,7 +86,12 @@ function ClipSession({ videoId, title, kind, audio, onClose }: ClipModeProps) {
         send("synchronize", snapshot);
         setState({ status: "playing", relay });
       } else if (status === "time" && validPosition) {
-        lease?.sync(position);
+        const { playing, duration } = event.data;
+        if (typeof playing === "boolean") {
+          lease?.sync(position, { playing, duration: typeof duration === "number" && Number.isFinite(duration) && duration > 0 ? duration : null });
+        } else {
+          lease?.sync(position);
+        }
       } else if (status === "ended" && lease) {
         if (validPosition) lease.sync(position);
         onClose();

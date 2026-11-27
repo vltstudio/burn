@@ -29,6 +29,9 @@
     let synchronized = false;
     let pendingSeek;
     let lastTime;
+    let lastPlaying;
+    let lastDuration;
+    let playing = false;
     let clock;
     const position = () => player.getCurrentTime();
     const setVolume = ({ volume, muted }) => {
@@ -40,13 +43,16 @@
       if (!synchronized) return;
       const time = position();
       if (!Number.isFinite(time) || time < 0) return;
-      if (pendingSeek) {
+      if (pendingSeek && playing) {
         if (Math.abs(time - pendingSeek.target) > 1.5 && performance.now() < pendingSeek.until) return;
         pendingSeek = undefined;
       }
-      if (time === lastTime) return;
+      const duration = player.getDuration();
+      if (time === lastTime && playing === lastPlaying && duration === lastDuration) return;
       lastTime = time;
-      notify("time", { position: time });
+      lastPlaying = playing;
+      lastDuration = duration;
+      notify("time", { position: time, playing, duration });
     };
     window.addEventListener("message", (event) => {
       const data = event.data;
@@ -78,6 +84,8 @@
             notify("ready");
           },
           onStateChange: (event) => {
+            if (event.data === YT.PlayerState.PLAYING) playing = true;
+            else if (event.data === YT.PlayerState.PAUSED || event.data === YT.PlayerState.ENDED) playing = false;
             if (event.data === YT.PlayerState.PLAYING && start && !started) {
               started = true;
               notify("playing", { position: position() });

@@ -40,7 +40,7 @@ function fixture() {
     Player: class {
       constructor(_id: string, options: { events: typeof events }) { events = options.events; }
     },
-    PlayerState: { PLAYING: 1, ENDED: 0 },
+    PlayerState: { PLAYING: 1, ENDED: 0, PAUSED: 2 },
   }, { now: () => 0 });
   frame.onYouTubeIframeAPIReady();
   events.onReady({ target: youtube });
@@ -76,9 +76,11 @@ describe("YouTube iframe relay", () => {
     clip.sample(43);
     expect(clip.reports().at(-1)).toEqual({ channel, status: "playing", position: 42 });
     clip.sample(59.5);
-    expect(clip.reports().at(-1)).toEqual({ channel, status: "time", position: 59.5 });
+    expect(clip.reports().at(-1)).toEqual({ channel, status: "time", position: 59.5, playing: true, duration: 100 });
     clip.sample(88.3);
-    expect(clip.reports().at(-1)).toEqual({ channel, status: "time", position: 88.3 });
+    expect(clip.reports().at(-1)).toEqual({ channel, status: "time", position: 88.3, playing: true, duration: 100 });
+    clip.events.onStateChange({ data: 2 });
+    expect(clip.reports().at(-1)).toEqual({ channel, status: "time", position: 88.3, playing: false, duration: 100 });
   });
 
   it("cues a paused track and never seeks beyond the clip's duration", () => {

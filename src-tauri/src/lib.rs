@@ -1,5 +1,7 @@
 mod clip;
 mod config;
+#[cfg(desktop)]
+mod discord;
 mod favorites_sync;
 mod error;
 mod import;
@@ -21,6 +23,8 @@ use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 use tokio::sync::Mutex;
 
 use config::{ConfigStore, Settings};
+#[cfg(desktop)]
+use config::DiscordPreferences;
 use favorites_sync::{FavoritesSync, SyncReport};
 use error::{Error, Result};
 use import::{ImportProgress, ImportReport, ImportRequest};
@@ -44,6 +48,8 @@ pub struct AppState {
     local: Arc<LocalLibrary>,
     lyrics: Mutex<HashMap<String, Lyrics>>,
     favorites_sync: FavoritesSync,
+    #[cfg(desktop)]
+    discord: discord::Presence,
 }
 
 // ------------------------------------------------------------------- commands
@@ -858,11 +864,75 @@ async fn settings_set(
     state: tauri::State<'_, Arc<AppState>>,
     settings: Settings,
 ) -> Result<Settings> {
-    let saved = state.settings.save(settings)?;
+    let saved = state.settings.save(|current| {
+        current.language = settings.language;
+        current.palette = settings.palette;
+    })?;
     if let Some(language) = saved.language.as_deref() {
         state.ytm.set_language(language).await;
     }
     Ok(saved)
+}
+
+#[cfg(desktop)]
+fn discord_main_window(window: &tauri::WebviewWindow) -> Result<()> {
+    if window.label() == "main" {
+        Ok(())
+    } else {
+        Err(Error::io("Настройки Discord доступны только в основном окне"))
+    }
+}
+
+#[cfg(desktop)]
+#[derive(Serialize)]
+struct DiscordPresenceView {
+    preferences: DiscordPreferences,
+    status: discord::Status,
+}
+
+#[cfg(desktop)]
+#[tauri::command]
+fn discord_presence_get(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<DiscordPresenceView> {
+    discord_main_window(&window)?;
+    Ok(DiscordPresenceView {
+        preferences: state.settings.get().discord,
+        status: state.discord.status(),
+    })
+}
+
+#[cfg(desktop)]
+#[tauri::command]
+fn discord_presence_configure(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, Arc<AppState>>,
+    preferences: DiscordPreferences,
+) -> Result<DiscordPreferences> {
+    discord_main_window(&window)?;
+    let previous = state.settings.get().discord;
+    let saved = state.settings.save(|settings| settings.discord = preferences)?.discord;
+    if saved != previous {
+        state.discord.set(None);
+    }
+    Ok(saved)
+}
+
+#[cfg(desktop)]
+#[tauri::command]
+fn discord_presence_sync(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, Arc<AppState>>,
+    activity: Option<discord::Activity>,
+) -> Result<()> {
+    discord_main_window(&window)?;
+    let preferences = state.settings.get().discord;
+    let desired = activity.filter(|activity| {
+        preferences.enabled && (!activity.local || preferences.share_local)
+    });
+    state.discord.set(desired);
+    Ok(())
 }
 
 #[tauri::command]
@@ -888,6 +958,14 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .on_window_event(|window, event| {
+            #[cfg(desktop)]
+            if window.label() == "main" && matches!(event, tauri::WindowEvent::Destroyed) {
+                if let Some(state) = window.try_state::<Arc<AppState>>() {
+                    state.discord.set(None);
+                }
+            }
+        })
         .register_asynchronous_uri_scheme_protocol("localmedia", |ctx, request, responder| {
             let app = ctx.app_handle().clone();
             tauri::async_runtime::spawn_blocking(move || {
@@ -929,6 +1007,8 @@ pub fn run() {
                 local: local_for_state,
                 lyrics: Mutex::new(HashMap::new()),
                 favorites_sync: FavoritesSync::new(config_dir.join("favorites-sync.json")),
+                #[cfg(desktop)]
+                discord: discord::Presence::new(app.handle().clone()),
             });
 
             let loaded = state.settings.language();
@@ -1001,6 +1081,12 @@ pub fn run() {
             auth_sign_out,
             settings_get,
             settings_set,
+            #[cfg(desktop)]
+            discord_presence_get,
+            #[cfg(desktop)]
+            discord_presence_configure,
+            #[cfg(desktop)]
+            discord_presence_sync,
             stream_url,
             quick_player::quick_window,
         ])

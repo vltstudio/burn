@@ -223,10 +223,13 @@ describe("clip audio handoff", () => {
     await update(() => lease.sync(89.6));
     expect(player.progress).toBe(89.6);
     expect(source.currentTime).toBe(61);
+    await update(() => lease.sync(89.6, { playing: false, duration: 205 }));
+    expect(player.clipPlayback).toEqual({ playing: false, duration: 205 });
     await update(lease.release);
     expect(audio()).toBe(source);
     expect(source.currentTime).toBe(89.6);
     expect(player.playing).toBe(true);
+    expect(player.clipPlayback).toBeNull();
   });
 
   it("does not start previously paused audio when leaving a clip", async () => {

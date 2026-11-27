@@ -1,0 +1,31 @@
+.discord-controls {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.discord-controls .status-line {
+  margin: 0;
+}
+
+.discord-check {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: fit-content;
+  cursor: pointer;
+}
+
+.discord-check input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.discord-check strong {
+  color: var(--text);
+}
+
+.discord-check:has(input:disabled) {
+  color: var(--muted);
+  cursor: default;
+}

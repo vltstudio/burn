@@ -21,6 +21,7 @@ import { LibraryView } from "./views/LibraryView";
 import { SearchView } from "./views/SearchView";
 import { UpdaterProvider } from "./updater";
 import { UpdateNotice } from "./components/UpdateSettings";
+import { DiscordPresenceBridge, useDiscordPresence } from "./discord-presence";
 
 type ToastFn = (message: string, kind?: "info" | "error") => void;
 
@@ -70,6 +71,7 @@ function Shell({
     () => window.localStorage.getItem("ytmusicdt.rail") !== "closed",
   );
   const contentRef = useRef<HTMLDivElement | null>(null);
+  const discord = useDiscordPresence();
 
   const route = stack[stack.length - 1];
   const routeKey = route.name === "detail" ? `detail-${route.browseId}`
@@ -162,6 +164,9 @@ function Shell({
 
   return (
     <BackdropProvider>
+      {discord.preferences?.enabled ? (
+        <DiscordPresenceBridge key={String(discord.preferences.shareLocal)} shareLocal={discord.preferences.shareLocal} />
+      ) : null}
       <ArtistNavProvider open={openArtist}>
         <LibraryProvider auth={auth} onToast={toast}>
           {isTauri() && /Windows/i.test(navigator.userAgent) ? <QuickPlayerBridge /> : null}
@@ -223,6 +228,7 @@ function Shell({
             onClose={() => setSettingsTab(null)}
             onAuthChanged={refreshAuth}
             onToast={toast}
+            discord={discord}
           />
         </div>
       </LibraryProvider>

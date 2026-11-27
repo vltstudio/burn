@@ -127,6 +127,27 @@ export interface Settings {
   palette: string | null;
 }
 
+export interface DiscordPreferences {
+  enabled: boolean;
+  shareLocal: boolean;
+}
+
+export type DiscordPresenceStatus = "idle" | "connecting" | "active" | "unavailable" | "rejected";
+
+export interface DiscordPresenceView {
+  preferences: DiscordPreferences;
+  status: DiscordPresenceStatus;
+}
+
+export interface DiscordActivity {
+  title: string;
+  artist: string | null;
+  coverUrl: string | null;
+  startMs: number;
+  endMs: number | null;
+  local: boolean;
+}
+
 export interface ApiErrorShape {
   message: string;
   needsAuth: boolean;
