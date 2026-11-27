@@ -3,18 +3,18 @@
 //! LRCLIB is asked for an LRC file, since it is free, keyless and often has
 //! timings where the catalogue does not.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::{Error, Result};
 use crate::ytm::api;
-use crate::ytm::parse::LyricLine;
+use crate::ytm::parse::{LyricLine, LyricWord};
 use crate::ytm::Ytm;
 
 const LRCLIB: &str = "https://lrclib.net/api";
 const USER_AGENT: &str = "YtMusicDT/0.1 (playlist client)";
 
-#[derive(Serialize, Clone, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Lyrics {
     /// Lines with a start time; empty when only plain text was found.
@@ -191,7 +191,7 @@ async fn request_synced(
 /// Reads an LRC file. Untimed lines and `[ar:…]`-style tags are dropped; a line
 /// may carry several timestamps (repeated choruses are written that way).
 pub fn parse_lrc(text: &str) -> Vec<LyricLine> {
-    let mut entries: Vec<(u64, String)> = Vec::new();
+    let mut entries: Vec<(u64, String, Option<Vec<LyricWord>>)> = Vec::new();
     for raw in text.lines() {
         let line = raw.trim_start_matches('\u{feff}');
         let mut cursor = 0usize;
@@ -215,20 +215,95 @@ pub fn parse_lrc(text: &str) -> Vec<LyricLine> {
         if content.is_empty() {
             continue;
         }
+        let (text, words) = split_words(content);
         for stamp in stamps {
-            entries.push((stamp, content.to_string()));
+            entries.push((stamp, text.clone(), words.clone()));
         }
     }
-    entries.sort_by_key(|(stamp, _)| *stamp);
+    entries.sort_by_key(|(stamp, _, _)| *stamp);
     let mut lines: Vec<LyricLine> = Vec::with_capacity(entries.len());
-    for (index, (start, text)) in entries.iter().enumerate() {
+    for (index, (start, text, words)) in entries.iter().enumerate() {
+        let end = entries.get(index + 1).map(|(next, _, _)| *next);
+        // The last word of a line has no closing stamp: it holds until the
+        // next line begins, which is what the fill animates towards.
+        let words = words.clone().map(|mut words| {
+            if let Some(last) = words.last_mut() {
+                if last.end_ms <= last.start_ms {
+                    last.end_ms = end.unwrap_or(last.start_ms + 900);
+                }
+            }
+            words
+        });
         lines.push(LyricLine {
             text: text.clone(),
             start_ms: *start,
-            end_ms: entries.get(index + 1).map(|(next, _)| *next),
+            end_ms: end,
+            words,
         });
     }
     lines
+}
+
+/// Enhanced LRC puts `<mm:ss.xx>` in front of every word, which is exactly the
+/// timing a karaoke fill needs. Returns the line without the markers and the
+/// words with their own spans.
+fn split_words(content: &str) -> (String, Option<Vec<LyricWord>>) {
+    let mut words: Vec<LyricWord> = Vec::new();
+    let mut lead = String::new();
+    let mut cursor = 0usize;
+    let mut pending: Option<u64> = None;
+    while let Some(open) = content[cursor..].find('<') {
+        let start = cursor + open;
+        let after = &content[start + 1..];
+        let Some(close) = after.find('>') else {
+            break;
+        };
+        let Some(stamp) = parse_stamp(&after[..close]) else {
+            cursor = start + 1;
+            continue;
+        };
+        let chunk = content[cursor..start].trim();
+        match pending.take() {
+            Some(previous) if !chunk.is_empty() => words.push(LyricWord {
+                text: chunk.to_string(),
+                start_ms: previous,
+                end_ms: stamp,
+            }),
+            Some(_) => {}
+            None => {
+                if !chunk.is_empty() {
+                    lead.push_str(chunk);
+                }
+            }
+        }
+        pending = Some(stamp);
+        cursor = (start + close + 2).min(content.len());
+    }
+    let Some(previous) = pending.take() else {
+        return (content.to_string(), None);
+    };
+    let tail = content[cursor.min(content.len())..].trim();
+    if !tail.is_empty() {
+        words.push(LyricWord {
+            text: tail.to_string(),
+            start_ms: previous,
+            end_ms: previous,
+        });
+    }
+    if words.is_empty() {
+        return (content.to_string(), None);
+    }
+    let joined = words
+        .iter()
+        .map(|word| word.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let text = if lead.is_empty() {
+        joined
+    } else {
+        format!("{lead} {joined}")
+    };
+    (text, Some(words))
 }
 
 /// `mm:ss.xx`, `mm:ss.xxx` and the older `mm:ss:xx`.
@@ -287,6 +362,21 @@ fn parse_clock(text: &str) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_word_timings_from_an_enhanced_lrc() {
+        let text = "[00:12.00]<00:12.00>Hold <00:12.40>me <00:13.10>tight\n[00:15.00]next line";
+        let lines = parse_lrc(text);
+        assert_eq!(lines[0].text, "Hold me tight");
+        let words = lines[0].words.as_ref().expect("word timings");
+        assert_eq!(words.len(), 3);
+        assert_eq!(words[0].start_ms, 12_000);
+        assert_eq!(words[0].end_ms, 12_400);
+        assert_eq!(words[2].text, "tight");
+        // The last word holds until the next line starts.
+        assert_eq!(words[2].end_ms, 15_000);
+        assert!(lines[1].words.is_none(), "a plain line keeps no word timings");
+    }
 
     #[test]
     fn reads_a_standard_lrc() {

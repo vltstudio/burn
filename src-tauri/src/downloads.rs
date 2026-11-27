@@ -1,4 +1,5 @@
 use crate::error::{Error, Result};
+use crate::lyrics::Lyrics;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -37,6 +38,7 @@ pub struct Download {
 pub struct Downloads {
     dir: PathBuf,
     covers: PathBuf,
+    lyrics: PathBuf,
     index_path: PathBuf,
     items: RwLock<Vec<Download>>,
     /// Ids currently being fetched, so a second request waits instead of
@@ -50,6 +52,8 @@ impl Downloads {
         let _ = std::fs::create_dir_all(&dir);
         let covers = dir.join("covers");
         let _ = std::fs::create_dir_all(&covers);
+        let lyrics = dir.join("lyrics");
+        let _ = std::fs::create_dir_all(&lyrics);
         let index_path = dir.join("index.json");
         let mut items: Vec<Download> = std::fs::read_to_string(&index_path)
             .ok()
@@ -73,6 +77,7 @@ impl Downloads {
         Self {
             dir,
             covers,
+            lyrics,
             index_path,
             items: RwLock::new(items),
             active: Mutex::new(HashSet::new()),
@@ -137,6 +142,22 @@ impl Downloads {
         std::fs::read(self.cover_path(video_id)).ok()
     }
 
+    /// Timed lyrics kept beside a downloaded track, so the pane works offline.
+    pub fn store_lyrics(&self, video_id: &str, lyrics: &Lyrics) {
+        if let Ok(text) = serde_json::to_string(lyrics) {
+            let _ = std::fs::write(self.lyrics_path(video_id), text);
+        }
+    }
+
+    pub fn lyrics(&self, video_id: &str) -> Option<Lyrics> {
+        let text = std::fs::read_to_string(self.lyrics_path(video_id)).ok()?;
+        serde_json::from_str(&text).ok()
+    }
+
+    pub fn lyrics_path(&self, video_id: &str) -> PathBuf {
+        self.lyrics.join(format!("{video_id}.json"))
+    }
+
     pub fn store_cover(&self, video_id: &str, bytes: &[u8]) {
         let _ = std::fs::write(self.cover_path(video_id), bytes);
     }
@@ -189,6 +210,7 @@ impl Downloads {
         };
         let _ = std::fs::remove_file(&download.path);
         let _ = std::fs::remove_file(self.cover_path(video_id));
+        let _ = std::fs::remove_file(self.lyrics_path(video_id));
         Ok(true)
     }
 

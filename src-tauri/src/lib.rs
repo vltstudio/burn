@@ -351,6 +351,13 @@ async fn track_lyrics(
     album: Option<String>,
     duration: Option<u32>,
 ) -> Result<Lyrics> {
+    if let Some(id) = video_id.as_deref() {
+        // A downloaded favourite carries its lyrics, so this works with no
+        // connection at all.
+        if let Some(cached) = state.downloads.lyrics(id) {
+            return Ok(cached);
+        }
+    }
     let info = TrackInfo {
         title: title.unwrap_or_default(),
         artist: artist.unwrap_or_default(),
@@ -365,6 +372,11 @@ async fn track_lyrics(
         return Ok(hit);
     }
     let fetched = lyrics::fetch(&state.ytm, video_id.as_deref(), info).await?;
+    if let Some(id) = video_id.as_deref() {
+        if state.downloads.find(id).is_some() {
+            state.downloads.store_lyrics(id, &fetched);
+        }
+    }
     let mut cache = state.lyrics.lock().await;
     if cache.len() >= 64 {
         cache.clear();
@@ -1276,6 +1288,17 @@ async fn keep_favorite_audio(
         has_cover: false,
     };
     state.downloads.commit(record.clone())?;
+    // The offline pane needs the text and its timings, so they are saved with
+    // the audio while there is still a connection.
+    let info = TrackInfo {
+        title: record.title.clone(),
+        artist: record.subtitle.clone(),
+        album: None,
+        seconds: record.duration,
+    };
+    if let Ok(lyrics) = lyrics::fetch(&state.ytm, Some(video_id), info).await {
+        state.downloads.store_lyrics(video_id, &lyrics);
+    }
     Ok(record)
 }
 
