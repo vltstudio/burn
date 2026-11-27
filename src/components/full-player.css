@@ -633,43 +633,32 @@
   height: 0;
 }
 
+/* Evenly spaced rows: no transform, one gap for every pair, so the text reads
+   as one column instead of blocks drifting apart. */
 .full-player .fp-karaoke-lines {
-  gap: clamp(10px, 1.9dvh, 20px);
+  align-content: start;
+  gap: clamp(4px, 0.7dvh, 10px);
   padding: 42cqh clamp(16px, 2.8vw, 36px) 48cqh;
 }
 
+/* The line that plays is pure white; the rest is grey, fading with distance. */
 .full-player .fp-karaoke-lines li {
-  transition:
-    opacity 560ms cubic-bezier(0.22, 1, 0.36, 1),
-    transform 620ms cubic-bezier(0.22, 1, 0.36, 1),
-    filter 560ms cubic-bezier(0.22, 1, 0.36, 1);
-  transform: translateY(4px);
-  will-change: opacity, transform;
+  color: rgba(255, 255, 255, 0.56);
+  transition: color 320ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .full-player .fp-karaoke-lines li[data-state="active"] {
-  opacity: 1;
-  transform: none;
-  filter: none;
+  color: #ffffff;
 }
 
-/* Distance reads as unfocus, the way a camera would: the next line blurs a
-   hair, the far ones sink into the background. */
-.full-player .fp-karaoke-lines li[data-distance="2"] { filter: blur(0.4px); }
+.full-player .fp-karaoke-lines li[data-distance="2"] {
+  color: rgba(255, 255, 255, 0.4);
+}
+
 .full-player .fp-karaoke-lines li[data-distance="3"],
-.full-player .fp-karaoke-lines li[data-distance="4"] { filter: blur(0.9px); }
-
-.full-player .fp-karaoke-lines li[data-state="past"] {
-  opacity: 0.4;
+.full-player .fp-karaoke-lines li[data-distance="4"] {
+  color: rgba(255, 255, 255, 0.26);
 }
-
-.full-player .fp-karaoke-lines li[data-state="upcoming"] {
-  opacity: 0.62;
-}
-
-.full-player .fp-karaoke-lines li[data-distance="2"] { opacity: 0.34; }
-.full-player .fp-karaoke-lines li[data-distance="3"] { opacity: 0.22; }
-.full-player .fp-karaoke-lines li[data-distance="4"] { opacity: 0.13; }
 
 .full-player .fp-karaoke-line {
   padding: 2px 0;
@@ -691,7 +680,8 @@
 }
 
 .full-player .fp-karaoke-lines li[data-state="active"] .fp-karaoke-line {
-  color: #fff;
+  color: #ffffff;
+  opacity: 1;
 }
 
 /* The fill is a gradient clipped to the glyphs, so the highlight glides
@@ -996,44 +986,6 @@
   width: 0;
   height: 0;
 }
-
-.full-player .fp-karaoke-lines {
-  gap: clamp(10px, 1.9dvh, 20px);
-  padding: 42cqh clamp(16px, 2.8vw, 36px) 48cqh;
-}
-
-.full-player .fp-karaoke-lines li {
-  transition:
-    opacity 560ms cubic-bezier(0.22, 1, 0.36, 1),
-    transform 620ms cubic-bezier(0.22, 1, 0.36, 1),
-    filter 560ms cubic-bezier(0.22, 1, 0.36, 1);
-  transform: translateY(4px);
-  will-change: opacity, transform;
-}
-
-.full-player .fp-karaoke-lines li[data-state="active"] {
-  opacity: 1;
-  transform: none;
-  filter: none;
-}
-
-/* Distance reads as unfocus, the way a camera would: the next line blurs a
-   hair, the far ones sink into the background. */
-.full-player .fp-karaoke-lines li[data-distance="2"] { filter: blur(0.4px); }
-.full-player .fp-karaoke-lines li[data-distance="3"],
-.full-player .fp-karaoke-lines li[data-distance="4"] { filter: blur(0.9px); }
-
-.full-player .fp-karaoke-lines li[data-state="past"] {
-  opacity: 0.4;
-}
-
-.full-player .fp-karaoke-lines li[data-state="upcoming"] {
-  opacity: 0.62;
-}
-
-.full-player .fp-karaoke-lines li[data-distance="2"] { opacity: 0.34; }
-.full-player .fp-karaoke-lines li[data-distance="3"] { opacity: 0.22; }
-.full-player .fp-karaoke-lines li[data-distance="4"] { opacity: 0.13; }
 
 .full-player .fp-karaoke-line {
   padding: 2px 0;
