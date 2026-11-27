@@ -1,4 +1,4 @@
-import type { LyricLine } from "../types";
+import type { LyricLine, LyricWord } from "../types";
 
 /**
  * Which lyric line is playing at `positionMs`. Lines are ordered by start, so
@@ -28,4 +28,21 @@ export function clockToSeconds(value: string | null): number | null {
   if (parts.some((part) => !/^\d+$/.test(part))) return null;
   const seconds = parts.reduce((total, part) => total * 60 + Number(part), 0);
   return Number.isSafeInteger(seconds) && seconds <= 0xffffffff ? seconds : null;
+}
+
+/** How much of a line has been sung: 0 before it starts, 1 once it ends. */
+export function lineProgress(line: LyricLine, positionMs: number): number {
+  const end = line.endMs ?? line.words?.at(-1)?.endMs ?? line.startMs + 1000;
+  return spanProgress(line.startMs, end, positionMs);
+}
+
+/** The same for one word of a line, so the fill can follow the voice. */
+export function wordProgress(word: LyricWord, positionMs: number): number {
+  return spanProgress(word.startMs, word.endMs, positionMs);
+}
+
+function spanProgress(startMs: number, endMs: number, positionMs: number): number {
+  if (!Number.isFinite(positionMs) || positionMs <= startMs) return 0;
+  if (endMs <= startMs) return 1;
+  return Math.min(1, (positionMs - startMs) / (endMs - startMs));
 }

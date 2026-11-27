@@ -204,10 +204,18 @@ export interface SpotifyStatus {
 }
 
 /** One line of lyrics with the moment it starts, in milliseconds. */
+export interface LyricWord {
+  text: string;
+  startMs: number;
+  endMs: number;
+}
+
 export interface LyricLine {
   text: string;
   startMs: number;
   endMs: number | null;
+  /** Word timings when the source has them; the karaoke fill follows these. */
+  words?: LyricWord[] | null;
 }
 
 /** Lyrics as the backend found them: timed lines, or plain text only. */
