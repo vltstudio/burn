@@ -1,0 +1,16 @@
+.local-pages,
+.local-queue-status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 12px;
+}
+
+.local-pages {
+  justify-content: flex-end;
+}
+
+.local-page-loading {
+  margin: 12px 0;
+}

@@ -1,0 +1,54 @@
+.yandex-actions,
+.yandex-preview-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.yandex-actions button,
+.yandex-select {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.yandex-preview {
+  display: grid;
+  gap: 8px;
+}
+
+.yandex-preview-head {
+  justify-content: space-between;
+}
+
+.yandex-collection {
+  align-items: start;
+  overflow-wrap: anywhere;
+}
+
+.yandex-collection input,
+.yandex-dialog progress {
+  accent-color: var(--accent);
+}
+
+.yandex-dialog progress {
+  width: 100%;
+}
+
+.yandex-dialog details {
+  font-size: 12px;
+}
+
+.yandex-dialog details ul,
+.yandex-warnings ul {
+  margin: 4px 0;
+  padding-left: 1.25rem;
+}
+
+.yandex-warnings {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 12px;
+}

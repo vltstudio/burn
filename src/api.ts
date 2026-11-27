@@ -1,5 +1,6 @@
 import { convertFileSrc, invoke, isTauri } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import type { YandexCollection, YandexFile, YandexImportResult, YandexPreview } from "./yandex";
 import type {
   ApiErrorShape,
   ArchiveState,
@@ -9,7 +10,9 @@ import type {
   Detail,
   Favorite,
   FavoritesSyncReport,
-  LocalTrack,
+  LocalAddRootResult,
+  LocalStatus,
+  LocalTrackPage,
   Lyrics,
   MediaItem,
   SearchResults,
@@ -55,12 +58,19 @@ export const api = {
   search: (query: string, filter: string | null) =>
     call<SearchResults>("search", { query, filter }),
   watchTrack: (videoId: string) => call<MediaItem>("watch_track", { videoId }),
+  resolveClip: (videoId: string, kind: string | null) => call<string | null>("resolve_clip", { videoId, kind }),
+  startClipEmbed: (videoId: string, channel: string) => call<string>("start_clip_embed", { videoId, channel }),
+  yandexPreview: (files: YandexFile[]) => call<YandexPreview>("yandex_preview", { files }),
+  yandexImport: (collections: YandexCollection[], requestId: string) =>
+    call<YandexImportResult[]>("yandex_import", { collections, requestId }),
+  yandexImportCancel: (requestId: string) => call<boolean>("yandex_import_cancel", { requestId }),
   recommendations: (videoId: string) => call<MediaItem[]>("recommendations", { videoId }),
-  localRoots: () => call<string[]>("local_roots"),
-  localAddRoot: (path: string) => call<LocalTrack[]>("local_add_root", { path }),
-  localRemoveRoot: (path: string) => call<LocalTrack[]>("local_remove_root", { path }),
-  localRescan: () => call<LocalTrack[]>("local_rescan"),
-  localTracks: () => call<LocalTrack[]>("local_tracks"),
+  localStatus: () => call<LocalStatus>("local_status"),
+  localSearch: (query: string, offset: number, limit: number, generation?: number | null) =>
+    call<LocalTrackPage>("local_search", { query, offset, limit, generation }),
+  localAddRoot: (path: string) => call<LocalAddRootResult>("local_add_root", { path }),
+  localRemoveRoot: (path: string) => call<LocalStatus>("local_remove_root", { path }),
+  localRescan: () => call<LocalStatus>("local_rescan"),
   favorites: () => call<Favorite[]>("favorites_list"),
   favoritesSync: () => call<FavoritesSyncReport>("favorites_sync"),
   favoritesSyncPlaylist: () => call<string | null>("favorites_sync_playlist"),

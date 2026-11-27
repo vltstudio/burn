@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>Клип YouTube</title>
+  <style>
+    html, body, iframe { width: 100%; height: 100%; margin: 0; border: 0; display: block; }
+    html { background: #000; }
+  </style>
+</head>
+<body>
+  <iframe
+    id="youtube"
+    title="Видеоплеер YouTube"
+    src="https://www.youtube.com/embed/__CLIP_ID__?enablejsapi=1&amp;origin=__CLIP_ORIGIN__&amp;widget_referrer=https%3A%2F%2Fcom.ytmusicdt.app&amp;playsinline=1"
+    referrerpolicy="strict-origin-when-cross-origin"
+    allow="encrypted-media; fullscreen"
+    allowfullscreen
+  ></iframe>
+  <script nonce="__CLIP_CHANNEL__">
+    const notify = (status, code) => window.parent.postMessage({
+      channel: "__CLIP_CHANNEL__", status, code
+    }, "*");
+    window.onYouTubeIframeAPIReady = () => {
+      new YT.Player("youtube", {
+        events: {
+          onReady: () => notify("ready"),
+          onError: (event) => notify("error", event.data),
+        },
+      });
+    };
+    const api = document.createElement("script");
+    api.src = "https://www.youtube.com/iframe_api";
+    api.onerror = () => notify("error");
+    document.head.append(api);
+  </script>
+</body>
+</html>

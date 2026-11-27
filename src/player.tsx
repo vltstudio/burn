@@ -40,6 +40,7 @@ interface PlayerApi {
   jumpTo: (index: number) => void;
   expanded: boolean;
   setExpanded: (value: boolean) => void;
+  suspendForClip: () => () => void;
 }
 
 const PlayerContext = createContext<PlayerApi | null>(null);
@@ -83,6 +84,7 @@ export function PlayerProvider({ children, onToast }: Props) {
   const shufflePositionRef = useRef(0);
   const radioRef = useRef<RadioLookup | null>(null);
   const waitingForRadioRef = useRef<RadioLookup | null>(null);
+  const clipLeaseRef = useRef<object | null>(null);
 
   const [queue, setQueue] = useState<MediaItem[]>([]);
   const [index, setIndex] = useState(-1);
@@ -145,6 +147,7 @@ export function PlayerProvider({ children, onToast }: Props) {
     radioRef.current?.cancel();
     radioRef.current = null;
     waitingForRadioRef.current = null;
+    clipLeaseRef.current = null;
     playRequestedRef.current = false;
     disposeAudioRef.current?.();
     audioRef.current = null;
@@ -165,6 +168,7 @@ export function PlayerProvider({ children, onToast }: Props) {
     async (item: MediaItem) => {
       if (!item.videoId && !item.localPath) return;
       const token = ++requestRef.current;
+      clipLeaseRef.current = null;
       cancelRadio();
       disposeAudioRef.current?.();
       const audio = new Audio();
@@ -203,7 +207,7 @@ export function PlayerProvider({ children, onToast }: Props) {
         else setPlaying(true);
       };
       audio.onpause = () => {
-        if (requestRef.current === token) {
+        if (requestRef.current === token && audio.paused) {
           if (!starting && !audio.ended) playRequestedRef.current = false;
           setPlaying(false);
         }
@@ -502,6 +506,7 @@ export function PlayerProvider({ children, onToast }: Props) {
   }, [advance, cancelRadio]);
 
   const toggle = useCallback(() => {
+    if (clipLeaseRef.current) return;
     const audio = audioRef.current;
     const item = queueRef.current[indexRef.current];
     if (!item) return;
@@ -525,6 +530,30 @@ export function PlayerProvider({ children, onToast }: Props) {
       void load(item);
     }
   }, [cancelRadio, load]);
+
+  const suspendForClip = useCallback(() => {
+    const lease = {};
+    const token = requestRef.current;
+    const audio = audioRef.current;
+    const resume = playRequestedRef.current && !audio?.ended && !waitingForRadioRef.current;
+    clipLeaseRef.current = lease;
+    cancelRadio();
+    playRequestedRef.current = false;
+    audio?.pause();
+    setPlaying(false);
+    return () => {
+      if (clipLeaseRef.current !== lease) return;
+      clipLeaseRef.current = null;
+      if (!resume || !audio || requestRef.current !== token || audioRef.current !== audio || audio.ended) return;
+      playRequestedRef.current = true;
+      if (audio.src) void audio.play().catch(() => {
+        if (requestRef.current === token && !clipLeaseRef.current && audio.paused) {
+          playRequestedRef.current = false;
+          setPlaying(false);
+        }
+      });
+    };
+  }, [cancelRadio]);
 
   const seek = useCallback((seconds: number) => {
     const audio = audioRef.current;
@@ -597,6 +626,7 @@ export function PlayerProvider({ children, onToast }: Props) {
       jumpTo,
       expanded,
       setExpanded,
+      suspendForClip,
     }),
     [
       queue,
@@ -620,6 +650,7 @@ export function PlayerProvider({ children, onToast }: Props) {
       enqueue,
       jumpTo,
       expanded,
+      suspendForClip,
     ],
   );
 

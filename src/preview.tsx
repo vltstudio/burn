@@ -56,6 +56,8 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   favorites_list: () => [],
   favorites_sync: () => ({ favorites: [], playlistId: "PLpreviewfavorites", uploaded: 0, downloaded: 0, removed: 0 }),
   favorites_sync_playlist: () => "PLpreviewfavorites",
+  local_status: () => ({ roots: [], total: 0, generation: 0 }),
+  local_search: () => ({ items: [], total: 0, libraryTotal: 0, generation: 0 }),
   recommendations: () => [],
   rate_song: () => null,
   track_lyrics: () => ({

@@ -693,7 +693,7 @@ pub fn search_results(response: &Value) -> SearchResults {
     results
 }
 
-pub(super) fn valid_video_id(video_id: &str) -> bool {
+pub(crate) fn valid_video_id(video_id: &str) -> bool {
     video_id.len() == 11
         && video_id
             .bytes()
@@ -732,6 +732,138 @@ pub fn watch_track(response: &Value, video_id: &str) -> Option<MediaItem> {
         .filter_map(|entry| entry.get("playlistPanelVideoRenderer"))
         .find(|track| track.get("videoId").and_then(Value::as_str) == Some(video_id))?;
     panel_video(track)
+}
+
+pub(super) fn clip_counterpart<'a>(response: &'a Value, video_id: &str) -> Option<&'a str> {
+    if !valid_video_id(video_id)
+        || response
+            .pointer("/currentVideoEndpoint/watchEndpoint/videoId")
+            .and_then(Value::as_str)
+            .is_some_and(|current| current != video_id)
+        || !clip_playable(response)
+    {
+        return None;
+    }
+
+    watch_queue(response)?
+        .into_iter()
+        .filter_map(|entry| entry.get("playlistPanelVideoWrapperRenderer"))
+        .filter(|wrapper| {
+            wrapper
+                .pointer("/primaryRenderer/playlistPanelVideoRenderer")
+                .is_some_and(|track| {
+                    track.get("videoId").and_then(Value::as_str) == Some(video_id)
+                        && clip_playable(track)
+                })
+        })
+        .filter_map(|wrapper| wrapper.get("counterpart").and_then(Value::as_array))
+        .flatten()
+        .filter_map(|entry| entry.pointer("/counterpartRenderer/playlistPanelVideoRenderer"))
+        .filter(|track| {
+            clip_playable(track)
+                && matches!(
+                    music_video_type(track).as_deref(),
+                    Some("MUSIC_VIDEO_TYPE_OMV") | Some("MUSIC_VIDEO_TYPE_UGC")
+                )
+        })
+        .filter_map(|track| {
+            let id = track.get("videoId")?.as_str()?;
+            let endpoint_id = track
+                .pointer("/navigationEndpoint/watchEndpoint/videoId")
+                .and_then(Value::as_str);
+            (valid_video_id(id)
+                && id != video_id
+                && !endpoint_id.is_some_and(|endpoint_id| endpoint_id != id))
+            .then_some(id)
+        })
+        .next()
+}
+
+fn clip_playable(track: &Value) -> bool {
+    track.get("isPlayable").and_then(Value::as_bool) != Some(false)
+        && track.get("unplayableText").is_none()
+        && !track
+            .pointer("/playabilityStatus/status")
+            .and_then(Value::as_str)
+            .is_some_and(|status| status != "OK")
+}
+
+#[cfg(test)]
+mod clip_tests {
+    use super::*;
+    use serde_json::json;
+
+    const SONG: &str = "9mWr4c_ig54";
+    const CLIP: &str = "E0S4W34zFMA";
+    const OTHER: &str = "M7lc1UVf-VE";
+
+    fn panel(id: &str, kind: &str) -> Value {
+        json!({
+            "videoId": id,
+            "navigationEndpoint": { "watchEndpoint": {
+                "videoId": id,
+                "watchEndpointMusicSupportedConfigs": {"watchEndpointMusicConfig": {"musicVideoType": kind}}
+            }}
+        })
+    }
+
+    fn wrapper(id: &str, counterparts: Vec<Value>) -> Value {
+        json!({"playlistPanelVideoWrapperRenderer": {
+            "primaryRenderer": {"playlistPanelVideoRenderer": panel(id, "MUSIC_VIDEO_TYPE_ATV")},
+            "counterpart": counterparts.into_iter().map(|item| json!({
+                "counterpartRenderer": {"playlistPanelVideoRenderer": item}
+            })).collect::<Vec<_>>(),
+        }})
+    }
+
+    fn watch(entries: Vec<Value>) -> Value {
+        json!({
+            "currentVideoEndpoint": {"watchEndpoint": {"videoId": SONG}},
+            "contents": {"singleColumnMusicWatchNextResultsRenderer": {"tabbedRenderer": {
+                "watchNextTabbedResultsRenderer": {"tabs": [
+                    {"tabRenderer": {"content": {"musicQueueRenderer": {
+                        "content": {"playlistPanelRenderer": {"contents": entries}}
+                    }}}}
+                ]}
+            }}}
+        })
+    }
+
+    #[test]
+    fn resolves_only_explicit_video_counterparts_of_the_requested_song() {
+        for kind in ["MUSIC_VIDEO_TYPE_OMV", "MUSIC_VIDEO_TYPE_UGC"] {
+            let response = watch(vec![
+                wrapper(OTHER, vec![panel(OTHER, kind)]),
+                wrapper(SONG, vec![panel(OTHER, "MUSIC_VIDEO_TYPE_ATV"), panel(CLIP, kind)]),
+            ]);
+            assert_eq!(clip_counterpart(&response, SONG), Some(CLIP));
+        }
+    }
+
+    #[test]
+    fn ignores_unrelated_queue_rows_and_audio_only_tracks() {
+        let response = watch(vec![
+            json!({"playlistPanelVideoRenderer": panel(CLIP, "MUSIC_VIDEO_TYPE_OMV")}),
+            wrapper(OTHER, vec![panel(CLIP, "MUSIC_VIDEO_TYPE_OMV")]),
+            wrapper(SONG, vec![panel(SONG, "MUSIC_VIDEO_TYPE_OMV"), panel(CLIP, "MUSIC_VIDEO_TYPE_ATV")]),
+        ]);
+        assert_eq!(clip_counterpart(&response, SONG), None);
+        assert_eq!(clip_counterpart(&response, OTHER), None);
+    }
+
+    #[test]
+    fn rejects_invalid_mismatched_and_restricted_counterparts() {
+        let mut restricted = panel(CLIP, "MUSIC_VIDEO_TYPE_OMV");
+        restricted["playabilityStatus"] = json!({"status": "LOGIN_REQUIRED"});
+        let mut mismatch = panel(CLIP, "MUSIC_VIDEO_TYPE_UGC");
+        mismatch["navigationEndpoint"]["watchEndpoint"]["videoId"] = json!(OTHER);
+        let response = watch(vec![wrapper(SONG, vec![
+            panel("../../video", "MUSIC_VIDEO_TYPE_OMV"),
+            restricted,
+            mismatch,
+        ])]);
+        assert_eq!(clip_counterpart(&response, SONG), None);
+    }
 }
 
 pub fn recommendations(response: &Value, seed: &str) -> Option<Vec<MediaItem>> {

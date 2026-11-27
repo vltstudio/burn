@@ -16,6 +16,7 @@ auth.json
 spotify.json
 local.json
 local-tracks.json
+tracks.json
 favorites-sync.json
 .DS_Store
 Thumbs.db

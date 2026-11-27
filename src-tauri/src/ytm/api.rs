@@ -71,6 +71,35 @@ pub async fn watch_track(ytm: &Ytm, video_id: &str) -> Result<MediaItem> {
         .ok_or_else(|| Error::api("YouTube не вернул доступный трек по этой ссылке"))
 }
 
+pub async fn resolve_clip(ytm: &Ytm, video_id: &str, kind: Option<&str>) -> Result<Option<String>> {
+    if !parse::valid_video_id(video_id) {
+        return Ok(None);
+    }
+    if kind == Some("video") {
+        return Ok(Some(video_id.to_owned()));
+    }
+
+    let response = ytm
+        .request(
+            "next",
+            json!({
+                "videoId": video_id,
+                "playlistId": format!("RDAMVM{video_id}"),
+                "isAudioOnly": true,
+                "enablePersistentPlaylistPanel": true,
+                "tunerSettingValue": "AUTOMIX_SETTING_NORMAL",
+                "watchEndpointMusicSupportedConfigs": {
+                    "watchEndpointMusicConfig": {
+                        "hasPersistentPlaylistPanel": true,
+                        "musicVideoType": "MUSIC_VIDEO_TYPE_ATV",
+                    }
+                },
+            }),
+        )
+        .await?;
+    Ok(parse::clip_counterpart(&response, video_id).map(str::to_owned))
+}
+
 fn recommendation_body(video_id: &str) -> Result<Value> {
     if !parse::valid_video_id(video_id) {
         return Err(Error::api("Некорректная ссылка на видео YouTube"));

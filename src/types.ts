@@ -48,6 +48,24 @@ export interface Favorite {
   thumb: string | null;
 }
 
+export interface LocalStatus {
+  roots: string[];
+  total: number;
+  generation: number;
+}
+
+export interface LocalTrackPage {
+  items: LocalTrack[];
+  total: number;
+  libraryTotal: number;
+  generation: number;
+}
+
+export interface LocalAddRootResult {
+  status: LocalStatus;
+  found: number;
+}
+
 export interface FavoritesSyncReport {
   favorites: Favorite[];
   playlistId: string;

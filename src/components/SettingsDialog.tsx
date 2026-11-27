@@ -6,7 +6,7 @@ import { Check, FolderOpen, Globe2, Palette, Plus, RefreshCw, SlidersHorizontal,
 import { api, ApiFailure } from "../api";
 import { usePlayer } from "../player";
 import { applyPalette, PALETTES, paletteOf } from "../theme";
-import type { AuthStatus, Settings } from "../types";
+import type { AuthStatus, LocalStatus, Settings } from "../types";
 import { SettingSection } from "./SettingSection";
 import { UpdateSettings } from "./UpdateSettings";
 
@@ -83,9 +83,14 @@ export function SettingsDialog({ open, initialTab, auth, onClose, onAuthChanged,
   const [settings, setSettings] = useState<Settings>({ language: null, palette: null });
   const [language, setLanguage] = useState("ru");
   const [palette, setPalette] = useState(paletteOf(null).id);
-  const [roots, setRoots] = useState<string[]>([]);
-  const [localCount, setLocalCount] = useState<number | null>(null);
-  const [scanning, setScanning] = useState(false);
+  const [localStatus, setLocalStatus] = useState<LocalStatus | null>(null);
+  const [localError, setLocalError] = useState<string | null>(null);
+  const [localPending, setLocalPending] = useState(false);
+  const [scanProgress, setScanProgress] = useState<number | null>(null);
+  const [localRevision, setLocalRevision] = useState(0);
+  const roots = localStatus?.roots ?? [];
+  const localCount = scanProgress ?? localStatus?.total ?? null;
+  const scanning = localPending || scanProgress !== null;
 
   useEffect(() => {
     void getVersion().then(setVersion).catch(() => undefined);
@@ -114,34 +119,35 @@ export function SettingsDialog({ open, initialTab, auth, onClose, onAuthChanged,
   useEffect(() => {
     if (!open || tab !== "local") return;
     let cancelled = false;
-    void Promise.all([api.localRoots(), api.localTracks()])
-      .then(([loaded, tracks]) => {
-        if (cancelled) return;
-        setRoots(loaded);
-        setLocalCount(tracks.length);
-      })
-      .catch(() => undefined);
+    setLocalError(null);
+    void api.localStatus().then((status) => {
+      if (!cancelled) setLocalStatus(status);
+    }).catch((error) => {
+      if (!cancelled) setLocalError(error instanceof Error ? error.message : String(error));
+    });
     return () => { cancelled = true; };
-  }, [open, tab]);
+  }, [open, tab, localRevision]);
 
-  // A big folder indexes for a while after the command returns nothing yet, so
-  // the section follows the backend's running count.
   useEffect(() => {
-    if (!open) return;
+    if (!open || tab !== "local") {
+      setScanProgress(null);
+      return;
+    }
     let unlisten: UnlistenFn | undefined;
     let cancelled = false;
-    void listen<{ found: number; done: boolean }>("local-scan", (event) => {
-      setLocalCount(event.payload.found);
-      setScanning(!event.payload.done);
+    void listen<{ found: number; done: boolean }>("local-scan", ({ payload }) => {
+      if (cancelled) return;
+      setScanProgress(payload.done ? null : payload.found);
+      if (payload.done) setLocalRevision((value) => value + 1);
     }).then((dispose) => {
-      if (cancelled) dispose();
+      if (cancelled) return dispose();
       else unlisten = dispose;
-    });
+    }).catch(() => undefined);
     return () => {
       cancelled = true;
-      unlisten?.();
+      void Promise.resolve(unlisten?.()).catch(() => undefined);
     };
-  }, [open]);
+  }, [open, tab]);
 
   useEffect(() => {
     if (!pending) return;
@@ -253,47 +259,44 @@ export function SettingsDialog({ open, initialTab, auth, onClose, onAuthChanged,
       return;
     }
     if (typeof picked !== "string") return;
-    setScanning(true);
+    setLocalPending(true);
     try {
-      const tracks = await api.localAddRoot(picked);
-      setRoots(await api.localRoots());
-      setLocalCount(tracks.length);
+      const { status, found } = await api.localAddRoot(picked);
+      setLocalStatus(status);
       onToast(
-        tracks.length
-          ? `Найдено треков: ${tracks.length}`
+        found
+          ? `Найдено треков: ${found.toLocaleString("ru-RU")}`
           : "В этой папке не нашлось музыкальных файлов",
-        tracks.length ? "info" : "error",
+        found ? "info" : "error",
       );
     } catch (error) {
       onToast(error instanceof ApiFailure ? error.message : String(error), "error");
     } finally {
-      setScanning(false);
+      setLocalPending(false);
     }
   };
 
   const removeFolder = async (path: string) => {
-    setScanning(true);
+    setLocalPending(true);
     try {
-      const tracks = await api.localRemoveRoot(path);
-      setRoots(await api.localRoots());
-      setLocalCount(tracks.length);
+      setLocalStatus(await api.localRemoveRoot(path));
     } catch (error) {
       onToast(error instanceof ApiFailure ? error.message : String(error), "error");
     } finally {
-      setScanning(false);
+      setLocalPending(false);
     }
   };
 
   const rescan = async () => {
-    setScanning(true);
+    setLocalPending(true);
     try {
-      const tracks = await api.localRescan();
-      setLocalCount(tracks.length);
-      onToast(`Просканировано треков: ${tracks.length}`);
+      const status = await api.localRescan();
+      setLocalStatus(status);
+      onToast(`Просканировано треков: ${status.total.toLocaleString("ru-RU")}`);
     } catch (error) {
       onToast(error instanceof ApiFailure ? error.message : String(error), "error");
     } finally {
-      setScanning(false);
+      setLocalPending(false);
     }
   };
 
@@ -434,12 +437,12 @@ export function SettingsDialog({ open, initialTab, auth, onClose, onAuthChanged,
                 Добавьте папки с файлами на этом компьютере — приложение прочитает их теги и покажет
                 треки в библиотеке, рядом с онлайн-музыкой.
               </p>
-              {roots.length === 0 ? (
+              {localStatus && roots.length === 0 && !scanning ? (
                 <div className="settings-soft-row">
                   <FolderOpen size={17} />
                   Папки ещё не добавлены
                 </div>
-              ) : (
+              ) : roots.length > 0 ? (
                 <div className="folder-list">
                   {roots.map((root) => (
                     <div className="folder-row" key={root}>
@@ -458,17 +461,22 @@ export function SettingsDialog({ open, initialTab, auth, onClose, onAuthChanged,
                     </div>
                   ))}
                 </div>
-              )}
-              {roots.length > 0 ? (
+              ) : null}
+              {localError ? (
+                <div className="actions-row">
+                  <span role="alert">{localError}</span>
+                  <button className="ghost-button" onClick={() => setLocalRevision((value) => value + 1)}>Попробовать снова</button>
+                </div>
+              ) : roots.length > 0 || scanning || !localStatus ? (
                 <div className="status-line" role="status">
-                  <span className={`status-dot ${scanning ? "" : "ok"}`} />
+                  <span className={`status-dot ${scanning || !localStatus ? "" : "ok"}`} />
                   {localCount === null
                     ? "Индексируем…"
                     : `Треков в библиотеке: ${localCount.toLocaleString("ru-RU")}${scanning ? " — сканируем…" : ""}`}
                 </div>
               ) : null}
               <div className="actions-row">
-                <button className="solid-button" onClick={() => void addFolder()} disabled={scanning}>
+                <button className="solid-button" onClick={() => void addFolder()} disabled={scanning || (!localStatus && !localError)}>
                   <Plus size={16} />
                   {scanning ? "Сканируем…" : "Добавить папку"}
                 </button>

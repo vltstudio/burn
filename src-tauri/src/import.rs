@@ -1,5 +1,4 @@
-//! Turns a Spotify playlist into a YouTube Music one: matches every track,
-//! creates the playlist and moves the cover over.
+//! Matches source tracks, creates a YouTube Music playlist and fills it.
 
 use std::collections::BTreeSet;
 use std::future::Future;
@@ -74,16 +73,16 @@ struct ImportJob {
     notify: tokio::sync::Notify,
 }
 
-struct RunningImport(Arc<ImportJob>);
+pub(crate) struct RunningImport(Arc<ImportJob>);
 
 impl RunningImport {
-    fn start(id: &str) -> Result<Self> {
+    pub(crate) fn start(id: &str) -> Result<Self> {
         if id.is_empty() || id.len() > 128 {
             return Err(Error::api("Некорректный идентификатор импорта"));
         }
         let mut active = ACTIVE.lock().map_err(|_| Error::api("Импорт недоступен"))?;
         if active.is_some() {
-            return Err(Error::api("Другой импорт Spotify ещё выполняется"));
+            return Err(Error::api("Другой импорт ещё выполняется"));
         }
         let job = Arc::new(ImportJob {
             id: id.to_string(),
@@ -94,7 +93,7 @@ impl RunningImport {
         Ok(Self(job))
     }
 
-    fn check(&self, playlist: Option<(&str, usize)>) -> Result<()> {
+    pub(crate) fn check(&self, playlist: Option<(&str, usize)>) -> Result<()> {
         if !self.0.cancelled.load(Ordering::SeqCst) {
             return Ok(());
         }
@@ -160,7 +159,7 @@ pub async fn import(
         ..ImportProgress::default()
     });
     let playlist = job.read(spotify.playlist(&request.url)).await?;
-    import_playlist(spotify, ytm, playlist, &request, &job, progress).await
+    import_playlist(Some(spotify), ytm, playlist, &request, &job, progress).await
 }
 
 /// The same pipeline for a list that has no playlist behind it, such as the
@@ -181,11 +180,34 @@ pub async fn import_liked(
         ..ImportProgress::default()
     });
     let playlist = job.read(spotify.liked()).await?;
-    import_playlist(spotify, ytm, playlist, &request, &job, progress).await
+    import_playlist(Some(spotify), ytm, playlist, &request, &job, progress).await
+}
+
+pub(crate) async fn import_metadata(
+    ytm: Arc<Ytm>,
+    name: String,
+    tracks: Vec<SpotifyTrack>,
+    job: &RunningImport,
+    progress: impl Fn(ImportProgress),
+) -> Result<ImportReport> {
+    let playlist = SpotifyPlaylist {
+        name,
+        tracks,
+        ..SpotifyPlaylist::default()
+    };
+    import_playlist(
+        None,
+        ytm,
+        playlist,
+        &ImportRequest::default(),
+        job,
+        progress,
+    )
+    .await
 }
 
 async fn import_playlist(
-    spotify: &Spotify,
+    spotify: Option<&Spotify>,
     ytm: Arc<Ytm>,
     playlist: SpotifyPlaylist,
     request: &ImportRequest,
@@ -194,7 +216,7 @@ async fn import_playlist(
 ) -> Result<ImportReport> {
     let total = playlist.tracks.len();
     if total == 0 {
-        return Err(Error::api("В Spotify не нашлось треков для импорта"));
+        return Err(Error::api("Не нашлось треков для импорта"));
     }
     if !ytm.is_signed_in().await {
         return Err(Error::Auth(
@@ -211,12 +233,18 @@ async fn import_playlist(
     let mut set: JoinSet<(usize, Result<Option<MediaItem>>)> = JoinSet::new();
     let mut next = 0;
     let mut done = 0;
+    let allow_missing_duration = spotify.is_none();
     while next < total || !set.is_empty() {
         while next < total && set.len() < MATCH_WORKERS {
             let index = next;
             let track = playlist.tracks[index].clone();
             let ytm = ytm.clone();
-            set.spawn(async move { (index, match_track(&ytm, &track).await) });
+            set.spawn(async move {
+                (
+                    index,
+                    match_track(&ytm, &track, allow_missing_duration).await,
+                )
+            });
             next += 1;
         }
         let joined = job.read(async { Ok(set.join_next().await) }).await?;
@@ -315,7 +343,7 @@ async fn import_playlist(
     let mut cover = false;
     let mut cover_error = None;
     job.check(Some((&playlist_id, added)))?;
-    if request.cover {
+    if let Some(spotify) = spotify.filter(|_| request.cover) {
         progress(ImportProgress {
             stage: "cover".into(),
             total,
@@ -378,12 +406,17 @@ fn compose_description(playlist: &SpotifyPlaylist, request: &ImportRequest) -> S
     parts.join("\n\n")
 }
 
-async fn match_track(ytm: &Ytm, track: &SpotifyTrack) -> Result<Option<MediaItem>> {
+async fn match_track(
+    ytm: &Ytm,
+    track: &SpotifyTrack,
+    allow_missing_duration: bool,
+) -> Result<Option<MediaItem>> {
     let query = search_query(track);
-    if let Some((score, item)) = search(ytm, &query, Some("songs"))
-        .await
-        .map(|results| best(&results, track))?
-    {
+    let songs = search(ytm, &query, Some("songs")).await?;
+    if allow_missing_duration && track.seconds.is_none() {
+        return Ok(exact_song_without_duration(&songs, track));
+    }
+    if let Some((score, item)) = best(&songs, track) {
         if score >= ACCEPT {
             return Ok(Some(item));
         }
@@ -391,6 +424,35 @@ async fn match_track(ytm: &Ytm, track: &SpotifyTrack) -> Result<Option<MediaItem
     Ok(best(&search(ytm, &query, None).await?, track)
         .filter(|(score, _)| *score >= ACCEPT)
         .map(|(_, item)| item))
+}
+
+fn exact_song_without_duration(results: &SearchResults, track: &SpotifyTrack) -> Option<MediaItem> {
+    let title = artist_name(&track.title);
+    let artists: Vec<_> = track.artists.iter().map(|name| artist_name(name)).collect();
+    if title.is_empty() || artists.is_empty() || artists.iter().any(String::is_empty) {
+        return None;
+    }
+    let mut matches = results.top.iter().chain(&results.items).filter(|item| {
+        item.kind == "song"
+            && item.video_id.as_ref().is_some_and(|id| !id.is_empty())
+            && artist_name(&item.title) == title
+            && item
+                .artists
+                .iter()
+                .map(|artist| artist_name(&artist.name))
+                .eq(artists.iter().cloned())
+    });
+    let first = matches.next()?;
+    let duration = first.duration.as_deref().and_then(parse_duration)?;
+    if matches.any(|item| {
+        item.duration
+            .as_deref()
+            .and_then(parse_duration)
+            .is_none_or(|seconds| duration.abs_diff(seconds) > 5)
+    }) {
+        return None;
+    }
+    Some(first.clone())
 }
 
 /// A throttled or dropped search would otherwise read as "this track is not on
@@ -716,6 +778,27 @@ mod tests {
     }
 
     #[test]
+    fn durationless_metadata_needs_an_exact_and_unambiguous_song() {
+        let mut wanted = track("Песня", "Исполнитель", 0);
+        wanted.seconds = None;
+        let mut results = SearchResults {
+            top: None,
+            items: vec![
+                candidate("Песня (Live)", "Исполнитель", "4:00"),
+                candidate("Песня", "Другой исполнитель", "4:00"),
+                candidate("Песня", "Исполнитель", "4:00"),
+            ],
+            continuation: None,
+        };
+        assert!(exact_song_without_duration(&results, &wanted).is_some());
+        assert_eq!(score(&wanted, &results.items[2]), 0.0);
+        results
+            .items
+            .push(candidate("Песня", "Исполнитель", "5:00"));
+        assert!(exact_song_without_duration(&results, &wanted).is_none());
+    }
+
+    #[test]
     fn an_identical_title_and_length_cannot_override_the_artist() {
         let wanted = track("Thriller", "Michael Jackson", 358);
         assert_eq!(
@@ -850,6 +933,7 @@ mod tests {
         let found = runtime.block_on(match_track(
             &ytm,
             &track("Thriller - 2001 Remaster", "Michael Jackson", 358),
+            false,
         ));
         let found = found.expect("search").expect("match");
         assert!(found.title.to_lowercase().contains("thriller"));

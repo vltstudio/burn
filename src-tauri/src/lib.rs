@@ -1,3 +1,4 @@
+mod clip;
 mod config;
 mod favorites_sync;
 mod error;
@@ -6,6 +7,7 @@ mod local;
 mod lyrics;
 mod signin;
 mod spotify;
+mod yandex;
 use signin::{Phase, SignIn};
 mod ytm;
 
@@ -21,7 +23,7 @@ use config::{ConfigStore, Settings};
 use favorites_sync::{FavoritesSync, SyncReport};
 use error::{Error, Result};
 use import::{ImportProgress, ImportReport, ImportRequest};
-use local::{ArchivedPlaylist, Favorite, LocalLibrary, LocalTrack};
+use local::{ArchivedPlaylist, Favorite, LocalAddRootResult, LocalLibrary, LocalStatus, LocalTrackPage};
 use lyrics::{Lyrics, TrackInfo};
 use spotify::{Spotify, SpotifyPlaylist};
 use ytm::api::{self, Account};
@@ -293,6 +295,29 @@ fn emit_import(app: &tauri::AppHandle, progress: ImportProgress) {
 
 #[tauri::command]
 fn spotify_import_cancel(request_id: String) -> bool {
+    import::cancel(&request_id)
+}
+
+#[tauri::command]
+async fn yandex_preview(files: Vec<yandex::YandexFile>) -> Result<yandex::YandexPreview> {
+    yandex::preview(files).await
+}
+
+#[tauri::command]
+async fn yandex_import(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+    collections: Vec<yandex::YandexCollection>,
+    request_id: String,
+) -> Result<Vec<yandex::YandexImportResult>> {
+    use tauri::Emitter;
+    yandex::import(state.ytm.clone(), request_id, collections, move |progress| {
+        let _ = app.emit("yandex-import", progress);
+    }).await
+}
+
+#[tauri::command]
+fn yandex_import_cancel(request_id: String) -> bool {
     import::cancel(&request_id)
 }
 
@@ -657,8 +682,25 @@ struct ScanProgress {
 }
 
 #[tauri::command]
-async fn local_roots(state: tauri::State<'_, Arc<AppState>>) -> Result<Vec<String>> {
-    Ok(state.local.roots())
+async fn local_status(app: tauri::AppHandle, state: tauri::State<'_, Arc<AppState>>) -> Result<LocalStatus> {
+    let library = state.local.clone();
+    tauri::async_runtime::spawn_blocking(move || ensure_local_library(&app, &library))
+        .await
+        .map_err(|_| Error::io("Не удалось прочитать состояние локальной библиотеки"))?
+}
+
+#[tauri::command]
+async fn local_search(
+    state: tauri::State<'_, Arc<AppState>>,
+    query: String,
+    offset: usize,
+    limit: usize,
+    generation: Option<u64>,
+) -> Result<LocalTrackPage> {
+    let library = state.local.clone();
+    tauri::async_runtime::spawn_blocking(move || library.search(&query, offset, limit, generation))
+        .await
+        .map_err(|_| Error::io("Не удалось выполнить поиск по локальной библиотеке"))?
 }
 
 #[tauri::command]
@@ -666,69 +708,59 @@ async fn local_add_root(
     app: tauri::AppHandle,
     state: tauri::State<'_, Arc<AppState>>,
     path: String,
-) -> Result<Vec<LocalTrack>> {
-    state.local.add_root(&path)?;
-    scan_folder(app, state.local.clone(), path).await
+) -> Result<LocalAddRootResult> {
+    let library = state.local.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = library.add_root_and_scan(&path, &|found| emit_scan(&app, found, false));
+        emit_scan(&app, result.as_ref().map_or(0, |value| value.status.total), true);
+        result
+    }).await.map_err(|_| Error::io("Не удалось просканировать папку"))?
 }
 
 #[tauri::command]
 async fn local_remove_root(
+    app: tauri::AppHandle,
     state: tauri::State<'_, Arc<AppState>>,
     path: String,
-) -> Result<Vec<LocalTrack>> {
-    state.local.remove_root(&path)
+) -> Result<LocalStatus> {
+    let library = state.local.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = library.remove_root(&path);
+        emit_scan(&app, result.as_ref().map_or(0, |value| value.total), true);
+        result
+    }).await.map_err(|_| Error::io("Не удалось убрать папку из библиотеки"))?
 }
 
 #[tauri::command]
 async fn local_rescan(
     app: tauri::AppHandle,
     state: tauri::State<'_, Arc<AppState>>,
-) -> Result<Vec<LocalTrack>> {
-    scan_local(app, state.local.clone()).await
-}
-
-#[tauri::command]
-async fn local_tracks(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, Arc<AppState>>,
-) -> Result<Vec<LocalTrack>> {
-    let tracks = state.local.tracks();
-    if !tracks.is_empty() || state.local.roots().is_empty() || state.local.scanned() {
-        return Ok(tracks);
-    }
-    scan_local(app, state.local.clone()).await
-}
-
-/// Indexes one folder; the rest of the list stays as it is.
-async fn scan_folder(
-    app: tauri::AppHandle,
-    library: Arc<LocalLibrary>,
-    root: String,
-) -> Result<Vec<LocalTrack>> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let result = library.scan_root(&root, &|found| emit_scan(&app, found, false));
-        emit_scan(&app, library.tracks().len(), true);
-        result
-    })
-    .await
-    .map_err(|error| Error::io(error.to_string()))?
-}
-
-/// Reads tags off the disk on a blocking thread, reporting the running count so
-/// the window keeps drawing while a large library is indexed.
-async fn scan_local(app: tauri::AppHandle, library: Arc<LocalLibrary>) -> Result<Vec<LocalTrack>> {
+) -> Result<LocalStatus> {
+    let library = state.local.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let result = library.scan(&|found| emit_scan(&app, found, false));
-        emit_scan(&app, library.tracks().len(), true);
+        emit_scan(&app, result.as_ref().map_or(0, |value| value.total), true);
         result
     })
     .await
-    .map_err(|error| Error::io(error.to_string()))?
+    .map_err(|_| Error::io("Не удалось обновить локальную библиотеку"))?
 }
 
 fn emit_scan(app: &tauri::AppHandle, found: usize, done: bool) {
     use tauri::Emitter;
     let _ = app.emit("local-scan", ScanProgress { found, done });
+}
+
+fn ensure_local_library(app: &tauri::AppHandle, library: &LocalLibrary) -> Result<LocalStatus> {
+    let started = std::cell::Cell::new(false);
+    let result = library.ensure_scan(&|found| {
+        started.set(true);
+        emit_scan(app, found, false);
+    });
+    if started.get() {
+        emit_scan(app, result.as_ref().map_or(0, |value| value.total), true);
+    }
+    result
 }
 
 /// One payload for the archive screen: entries and whether the person set a
@@ -855,8 +887,11 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .register_uri_scheme_protocol("localmedia", |ctx, request| {
-            serve_local_media(ctx.app_handle(), request)
+        .register_asynchronous_uri_scheme_protocol("localmedia", |ctx, request, responder| {
+            let app = ctx.app_handle().clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                responder.respond(serve_local_media(&app, request));
+            });
         })
         .setup(|app| {
             #[cfg(desktop)]
@@ -901,22 +936,19 @@ pub fn run() {
                 state.ytm.load_session().await;
             });
 
-            // Only a library that has never been scanned is walked at startup;
-            // afterwards the list comes from disk.
-            if !state.local.roots().is_empty() && !state.local.scanned() {
-                let scanner = state.local.clone();
-                let progress_app = app.handle().clone();
-                tauri::async_runtime::spawn_blocking(move || {
-                    let _ = scanner.scan(&|found| emit_scan(&progress_app, found, false));
-                });
-            }
-
+            let scanner = state.local.clone();
+            let progress_app = app.handle().clone();
             app.manage(state);
+            tauri::async_runtime::spawn_blocking(move || {
+                let _ = ensure_local_library(&progress_app, &scanner);
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             search,
             watch_track,
+            clip::resolve_clip,
+            clip::start_clip_embed,
             recommendations,
             search_more,
             suggestions,
@@ -927,11 +959,11 @@ pub fn run() {
             library_albums,
             library_artists,
             liked_songs,
-            local_roots,
+            local_status,
+            local_search,
             local_add_root,
             local_remove_root,
             local_rescan,
-            local_tracks,
             favorites_list,
             favorites_sync,
             favorites_sync_playlist,
@@ -951,6 +983,9 @@ pub fn run() {
             spotify_import,
             spotify_import_liked,
             spotify_import_cancel,
+            yandex_preview,
+            yandex_import,
+            yandex_import_cancel,
             rate_song,
             track_lyrics,
             auth_status,
@@ -1029,22 +1064,75 @@ fn serve_local_media(
             .unwrap_or_else(|_| tauri::http::Response::new(Cow::Borrowed(&b""[..])));
     }
 
-    match std::fs::read(&path) {
-        Ok(bytes) => {
-            let mime = mime_for(&path);
-            tauri::http::Response::builder()
-                .status(200)
-                .header("Content-Type", mime)
-                .header("Accept-Ranges", "none")
-                .header("Access-Control-Allow-Origin", "*")
-                .body(Cow::Owned(bytes))
-                .unwrap_or_else(|_| tauri::http::Response::new(Cow::Borrowed(&b""[..])))
+    use std::io::{Read, Seek, SeekFrom};
+    let response = |file: &mut std::fs::File| -> std::io::Result<_> {
+        let length = file.metadata()?.len();
+        let mut builder = tauri::http::Response::builder()
+            .header("Content-Type", mime_for(&path))
+            .header("Accept-Ranges", "bytes")
+            .header("Access-Control-Allow-Origin", "*");
+        let head = request.method() == tauri::http::Method::HEAD;
+        let mut bytes = Vec::new();
+        if let Some(range) = request.headers().get(tauri::http::header::RANGE) {
+            let Some((start, end)) = range.to_str().ok().and_then(|range| media_range(range, length)) else {
+                return Ok(builder.status(416).header("Content-Range", format!("bytes */{length}"))
+                    .body(Cow::Borrowed(&b""[..])).unwrap());
+            };
+            let count = end - start + 1;
+            if !head {
+                file.seek(SeekFrom::Start(start))?;
+                bytes.resize(count as usize, 0);
+                file.read_exact(&mut bytes)?;
+            }
+            builder = builder.status(206)
+                .header("Content-Range", format!("bytes {start}-{end}/{length}"))
+                .header("Content-Length", count);
+        } else {
+            if !head {
+                file.read_to_end(&mut bytes)?;
+            }
+            builder = builder.status(200).header("Content-Length", length);
         }
-        Err(_) => tauri::http::Response::builder()
-            .status(404)
-            .body(Cow::Borrowed(&b"not found"[..]))
-            .unwrap_or_else(|_| tauri::http::Response::new(Cow::Borrowed(&b""[..]))),
-    }
+        Ok(builder.body(Cow::Owned(bytes)).unwrap())
+    };
+    std::fs::File::open(&path).and_then(|mut file| response(&mut file)).unwrap_or_else(|_| {
+        tauri::http::Response::builder().status(404)
+            .body(Cow::Borrowed(&b"not found"[..])).unwrap()
+    })
+}
+
+fn media_range(header: &str, length: u64) -> Option<(u64, u64)> {
+    const CHUNK: u64 = 2 * 1024 * 1024;
+    let (first, last) = header.strip_prefix("bytes=")?.trim().split_once('-')?;
+    let limit = length.checked_sub(1)?;
+    let parse = |number: &str| {
+        (!number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit()))
+            .then(|| number.parse::<u64>().ok()).flatten()
+    };
+    let (start, end) = if first.is_empty() {
+        let count = parse(last)?;
+        if count == 0 { return None; }
+        (length.saturating_sub(count.min(CHUNK)), limit)
+    } else {
+        let start = parse(first)?;
+        let end = if last.is_empty() { limit } else { parse(last)?.min(limit) };
+        (start, end.min(start.saturating_add(CHUNK - 1)))
+    };
+    (start <= end).then_some((start, end))
+}
+
+#[cfg(test)]
+#[test]
+fn local_media_ranges_are_bounded() {
+    assert_eq!(media_range("bytes=10-19", 100), Some((10, 19)));
+    assert_eq!(media_range("bytes=10-", 100), Some((10, 99)));
+    assert_eq!(media_range("bytes=-10", 100), Some((90, 99)));
+    assert_eq!(media_range("bytes=0-9999999", 10_000_000), Some((0, 2_097_151)));
+    assert_eq!(media_range("bytes=100-101", 100), None);
+    assert_eq!(media_range("bytes=10-9", 100), None);
+    assert_eq!(media_range("bytes=0-1,4-6", 100), None);
+    assert_eq!(media_range("bytes=-0", 100), None);
+    assert_eq!(media_range("bytes=0-", 0), None);
 }
 
 fn percent_decode(value: &str) -> String {

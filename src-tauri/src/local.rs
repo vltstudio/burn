@@ -1,4 +1,7 @@
+use std::collections::{HashMap, VecDeque};
+use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock, RwLock};
 
 use serde::{Deserialize, Serialize};
 
@@ -23,6 +26,168 @@ pub struct LocalTrack {
     pub has_cover: bool,
     /// Folder the track was found under, used for grouping.
     pub root: String,
+}
+
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalStatus {
+    pub roots: Vec<String>,
+    pub total: usize,
+    pub generation: u64,
+}
+
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalTrackPage {
+    pub items: Vec<LocalTrack>,
+    pub total: usize,
+    pub library_total: usize,
+    pub generation: u64,
+}
+
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalAddRootResult {
+    pub status: LocalStatus,
+    pub found: usize,
+}
+
+const MAX_TRACK_PAGE: usize = 256;
+const NO_ARTIST_LABEL: &str = "Локальный файл";
+
+#[derive(Default)]
+struct TrackIndex {
+    tracks: Vec<LocalTrack>,
+    paths: HashMap<PathBuf, usize>,
+    texts: Vec<String>,
+    postings: HashMap<u64, Vec<u32>>,
+    matches: Mutex<VecDeque<(String, Vec<u32>)>>,
+    generation: u64,
+    scanned: bool,
+}
+
+impl TrackIndex {
+    fn new(tracks: Vec<LocalTrack>, generation: u64) -> Self {
+        let mut index = Self {
+            paths: HashMap::with_capacity(tracks.len()),
+            texts: Vec::with_capacity(tracks.len()),
+            tracks,
+            generation,
+            scanned: true,
+            ..Self::default()
+        };
+        for (position, track) in index.tracks.iter().enumerate() {
+            index
+                .paths
+                .entry(PathBuf::from(&track.path))
+                .or_insert(position);
+            let title = if track.title.is_empty() {
+                &track.path
+            } else {
+                &track.title
+            };
+            let artist = if track.artist.is_empty() {
+                NO_ARTIST_LABEL
+            } else {
+                &track.artist
+            };
+            let text = format!("{title} {artist} {}", track.album).to_lowercase();
+            let (mut previous, mut pair) = (0, 0);
+            for ch in text.chars() {
+                let code = u64::from(ch) + 1;
+                let next_pair = (previous << 21) | code;
+                for gram in [code, next_pair, (pair << 21) | code] {
+                    let postings = index.postings.entry(gram).or_default();
+                    let position = position as u32;
+                    if postings.last() != Some(&position) {
+                        postings.push(position);
+                    }
+                }
+                previous = code;
+                pair = next_pair;
+            }
+            index.texts.push(text);
+        }
+        index
+    }
+
+    fn page(&self, query: &str, offset: usize, limit: usize) -> LocalTrackPage {
+        let query = query
+            .trim_matches(|ch: char| ch.is_whitespace() && ch != '\u{0085}' || ch == '\u{feff}')
+            .to_lowercase();
+        let limit = limit.clamp(1, MAX_TRACK_PAGE);
+        let mut page = LocalTrackPage {
+            items: Vec::new(),
+            total: 0,
+            library_total: self.tracks.len(),
+            generation: self.generation,
+        };
+        if query.is_empty() {
+            page.total = self.tracks.len();
+            page.items
+                .extend(self.tracks.iter().skip(offset).take(limit).cloned());
+            return page;
+        }
+
+        let (mut gram, mut length, mut candidates) = (0, 0, None::<&[u32]>);
+        const TRIGRAM_MASK: u64 = (1 << 63) - 1;
+        for ch in query.chars() {
+            gram = ((gram << 21) | (u64::from(ch) + 1)) & TRIGRAM_MASK;
+            length += 1;
+            if length < 3 {
+                continue;
+            }
+            let Some(postings) = self.postings.get(&gram) else {
+                return page;
+            };
+            if candidates.is_none_or(|current| postings.len() < current.len()) {
+                candidates = Some(postings);
+            }
+        }
+        if length <= 3 {
+            if let Some(postings) = self.postings.get(&gram) {
+                page.total = postings.len();
+                page.items.extend(
+                    postings
+                        .iter()
+                        .skip(offset)
+                        .take(limit)
+                        .map(|&position| self.tracks[position as usize].clone()),
+                );
+            }
+            return page;
+        }
+
+        let mut cache = self
+            .matches
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let entry = cache
+            .iter()
+            .position(|(cached, _)| cached == &query)
+            .and_then(|position| cache.remove(position))
+            .unwrap_or_else(|| {
+                let matches = candidates
+                    .unwrap_or_default()
+                    .iter()
+                    .copied()
+                    .filter(|&position| self.texts[position as usize].contains(&query))
+                    .collect();
+                (query, matches)
+            });
+        page.total = entry.1.len();
+        page.items.extend(
+            entry
+                .1
+                .iter()
+                .skip(offset)
+                .take(limit)
+                .map(|&position| self.tracks[position as usize].clone()),
+        );
+        cache.push_front(entry);
+        cache.truncate(4);
+        page
+    }
 }
 
 /// One app-level favourite. It carries its own metadata so the list renders
@@ -142,8 +307,8 @@ pub struct LocalLibrary {
     cache_dir: PathBuf,
     store: std::sync::RwLock<Store>,
     writes: std::sync::Mutex<()>,
-    tracks: std::sync::RwLock<Vec<LocalTrack>>,
-    scanned: std::sync::atomic::AtomicBool,
+    tracks: OnceLock<RwLock<TrackIndex>>,
+    scanning: Mutex<()>,
 }
 
 impl LocalLibrary {
@@ -153,11 +318,6 @@ impl LocalLibrary {
             .and_then(|text| serde_json::from_str::<Store>(&text).ok())
             .unwrap_or_default();
         let tracks_path = path.with_file_name("tracks.json");
-        let cached = std::fs::read_to_string(&tracks_path).ok();
-        let scanned = cached.is_some();
-        let tracks = cached
-            .and_then(|text| serde_json::from_str::<Vec<LocalTrack>>(&text).ok())
-            .unwrap_or_default();
         let _ = std::fs::create_dir_all(&cache_dir);
         Self {
             path,
@@ -165,14 +325,58 @@ impl LocalLibrary {
             cache_dir,
             store: std::sync::RwLock::new(store),
             writes: std::sync::Mutex::new(()),
-            tracks: std::sync::RwLock::new(tracks),
-            scanned: std::sync::atomic::AtomicBool::new(scanned),
+            tracks: OnceLock::new(),
+            scanning: Mutex::new(()),
         }
     }
 
-    /// True once a scan has run and its result is on disk.
-    pub fn scanned(&self) -> bool {
-        self.scanned.load(std::sync::atomic::Ordering::Relaxed)
+    fn track_index(&self) -> &RwLock<TrackIndex> {
+        self.tracks.get_or_init(|| {
+            let roots = self.roots();
+            if roots.is_empty() {
+                return RwLock::new(TrackIndex::default());
+            }
+            let cached = std::fs::File::open(&self.tracks_path)
+                .ok()
+                .and_then(|file| {
+                    serde_json::from_reader::<_, Vec<LocalTrack>>(BufReader::new(file)).ok()
+                });
+            RwLock::new(cached.map_or_else(TrackIndex::default, |mut tracks| {
+                tracks.retain(|track| roots.contains(&track.root));
+                TrackIndex::new(tracks, 1)
+            }))
+        })
+    }
+
+    pub fn status(&self) -> Result<LocalStatus> {
+        let index = self
+            .track_index()
+            .read()
+            .map_err(|_| Error::io("track index is locked"))?;
+        Ok(LocalStatus {
+            roots: self.roots(),
+            total: index.tracks.len(),
+            generation: index.generation,
+        })
+    }
+
+    pub fn search(
+        &self,
+        query: &str,
+        offset: usize,
+        limit: usize,
+        generation: Option<u64>,
+    ) -> Result<LocalTrackPage> {
+        let index = self
+            .track_index()
+            .read()
+            .map_err(|_| Error::io("track index is locked"))?;
+        if generation.is_some_and(|generation| generation != index.generation) {
+            return Err(Error::api(
+                "Локальная библиотека изменилась. Выберите трек ещё раз.",
+            ));
+        }
+        Ok(index.page(query, offset, limit))
     }
 
     fn save(&self) -> Result<()> {
@@ -391,132 +595,220 @@ impl LocalLibrary {
         std::fs::read(path).ok()
     }
 
-    pub fn add_root(&self, root: &str) -> Result<Vec<String>> {
+    pub fn add_root_and_scan(
+        &self,
+        root: &str,
+        progress: &dyn Fn(usize),
+    ) -> Result<LocalAddRootResult> {
         let path = Path::new(root);
         if !path.is_dir() {
             return Err(Error::io(format!("Папка не найдена: {root}")));
         }
-        {
+        let _scan = self
+            .scanning
+            .lock()
+            .map_err(|_| Error::io("scan is locked"))?;
+        let (scanned, count, generation) = {
+            let index = self
+                .track_index()
+                .read()
+                .map_err(|_| Error::io("track index is locked"))?;
+            (index.scanned, index.tracks.len(), index.generation)
+        };
+        let (added, roots) = {
             let mut store = self
                 .store
                 .write()
                 .map_err(|_| Error::io("local store is locked"))?;
-            let normalized = path.to_string_lossy().to_string();
-            if !store.roots.contains(&normalized) {
-                store.roots.push(normalized);
+            let added = !store.roots.iter().any(|current| current == root);
+            if added {
+                let mut candidate = store.clone();
+                candidate.roots.push(root.to_owned());
+                self.write_store(&candidate)?;
+                *store = candidate;
             }
+            (added, store.roots.clone())
+        };
+        if !scanned {
+            self.scan_roots(&roots, generation + 1, progress)?;
+        } else if added {
+            progress(count);
+            let mut fresh = Vec::new();
+            walk_root(root, &mut fresh, &|found| progress(count + found));
+            let mut index = self
+                .track_index()
+                .write()
+                .map_err(|_| Error::io("track index is locked"))?;
+            let mut tracks = std::mem::take(&mut index.tracks);
+            tracks.append(&mut fresh);
+            sort_tracks(&mut tracks);
+            *index = TrackIndex::new(tracks, generation + 1);
+            drop(index);
+            self.save_tracks()?;
         }
-        self.save()?;
-        Ok(self.roots())
+        let index = self
+            .track_index()
+            .read()
+            .map_err(|_| Error::io("track index is locked"))?;
+        Ok(LocalAddRootResult {
+            status: LocalStatus {
+                roots,
+                total: index.tracks.len(),
+                generation: index.generation,
+            },
+            found: index
+                .tracks
+                .iter()
+                .filter(|track| track.root == root)
+                .count(),
+        })
     }
 
-    /// Drops a folder and, with it, every track that came from there. The rest
-    /// of the library stays indexed, so removing a folder needs no rescan.
-    pub fn remove_root(&self, root: &str) -> Result<Vec<LocalTrack>> {
+    pub fn remove_root(&self, root: &str) -> Result<LocalStatus> {
+        let _scan = self
+            .scanning
+            .lock()
+            .map_err(|_| Error::io("scan is locked"))?;
+        let index = self.track_index();
         {
             let mut store = self
                 .store
                 .write()
                 .map_err(|_| Error::io("local store is locked"))?;
-            store.roots.retain(|current| current != root);
+            if !store.roots.iter().any(|current| current == root) {
+                drop(store);
+                return self.status();
+            }
+            let mut candidate = store.clone();
+            candidate.roots.retain(|current| current != root);
+            self.write_store(&candidate)?;
+            *store = candidate;
         }
-        self.save()?;
-
-        let remaining = {
-            let mut tracks = self
-                .tracks
-                .write()
-                .map_err(|_| Error::io("track list is locked"))?;
-            tracks.retain(|track| track.root != root);
-            tracks.clone()
-        };
-        if let Ok(text) = serde_json::to_string(&remaining) {
-            let _ = std::fs::write(&self.tracks_path, text);
-        }
-        Ok(remaining)
-    }
-
-    pub fn tracks(&self) -> Vec<LocalTrack> {
-        self.tracks
-            .read()
-            .map(|tracks| tracks.clone())
-            .unwrap_or_default()
-    }
-
-    /// Walks every root and rebuilds the track list. Cheap enough to rerun on
-    /// startup and on demand: folders hold hundreds of files, not millions.
-    /// Walks every root, rebuilding the track list. `progress` is called with
-    /// the running count so a long scan can report where it is.
-    pub fn scan(&self, progress: &dyn Fn(usize)) -> Result<Vec<LocalTrack>> {
-        let mut found: Vec<LocalTrack> = Vec::new();
-        for root in self.roots() {
-            found.extend(walk_root(&root, &mut found.len(), progress));
-        }
-        found.sort_by(compare_tracks);
-        self.replace_tracks(found, progress)
-    }
-
-    /// Indexes one folder and merges it into the list, so adding a folder costs
-    /// as much as that folder holds, not as much as the whole library.
-    pub fn scan_root(&self, root: &str, progress: &dyn Fn(usize)) -> Result<Vec<LocalTrack>> {
-        let mut fresh: Vec<LocalTrack> = Vec::new();
-        fresh.extend(walk_root(root, &mut fresh.len(), progress));
-
-        let mut merged = {
-            let mut tracks = self
-                .tracks
-                .write()
-                .map_err(|_| Error::io("track list is locked"))?;
-            tracks.retain(|track| track.root != root);
-            tracks.extend(fresh);
-            tracks.clone()
-        };
-        merged.sort_by(compare_tracks);
-        self.replace_tracks(merged, progress)
-    }
-
-    fn replace_tracks(
-        &self,
-        tracks: Vec<LocalTrack>,
-        progress: &dyn Fn(usize),
-    ) -> Result<Vec<LocalTrack>> {
-        *self
-            .tracks
+        let mut index = index
             .write()
-            .map_err(|_| Error::io("track list is locked"))? = tracks.clone();
-        self.scanned
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-        progress(tracks.len());
-        if let Ok(text) = serde_json::to_string(&tracks) {
-            let _ = std::fs::write(&self.tracks_path, text);
+            .map_err(|_| Error::io("track index is locked"))?;
+        if index.scanned {
+            let generation = index.generation + 1;
+            let mut tracks = std::mem::take(&mut index.tracks);
+            tracks.retain(|track| track.root != root);
+            *index = TrackIndex::new(tracks, generation);
+            drop(index);
+            self.save_tracks()?;
+        } else {
+            index.generation += 1;
+            drop(index);
         }
-        Ok(tracks)
+        self.status()
+    }
+
+    pub fn ensure_scan(&self, progress: &dyn Fn(usize)) -> Result<LocalStatus> {
+        if self.roots().is_empty()
+            || self
+                .track_index()
+                .read()
+                .map_err(|_| Error::io("track index is locked"))?
+                .scanned
+        {
+            return self.status();
+        }
+        let _scan = self
+            .scanning
+            .lock()
+            .map_err(|_| Error::io("scan is locked"))?;
+        let (scanned, generation) = {
+            let index = self
+                .track_index()
+                .read()
+                .map_err(|_| Error::io("track index is locked"))?;
+            (index.scanned, index.generation)
+        };
+        let roots = self.roots();
+        if !scanned && !roots.is_empty() {
+            self.scan_roots(&roots, generation + 1, progress)?;
+        }
+        self.status()
+    }
+
+    pub fn scan(&self, progress: &dyn Fn(usize)) -> Result<LocalStatus> {
+        let _scan = self
+            .scanning
+            .lock()
+            .map_err(|_| Error::io("scan is locked"))?;
+        let generation = self
+            .track_index()
+            .read()
+            .map_err(|_| Error::io("track index is locked"))?
+            .generation
+            + 1;
+        self.scan_roots(&self.roots(), generation, progress)?;
+        self.status()
+    }
+
+    fn scan_roots(
+        &self,
+        roots: &[String],
+        generation: u64,
+        progress: &dyn Fn(usize),
+    ) -> Result<()> {
+        let mut tracks = Vec::new();
+        progress(0);
+        for root in roots {
+            walk_root(root, &mut tracks, progress);
+        }
+        sort_tracks(&mut tracks);
+        let index = TrackIndex::new(tracks, generation);
+        *self
+            .track_index()
+            .write()
+            .map_err(|_| Error::io("track index is locked"))? = index;
+        self.save_tracks()
+    }
+
+    fn save_tracks(&self) -> Result<()> {
+        let index = self
+            .track_index()
+            .read()
+            .map_err(|_| Error::io("track index is locked"))?;
+        let temporary = self.tracks_path.with_extension("tmp");
+        let mut writer = BufWriter::new(std::fs::File::create(&temporary)?);
+        serde_json::to_writer(&mut writer, &index.tracks)
+            .map_err(|error| Error::io(error.to_string()))?;
+        writer.flush()?;
+        drop(writer);
+        std::fs::rename(temporary, &self.tracks_path)?;
+        Ok(())
     }
 
     /// True when the path belongs to the scanned library; the media protocol
     /// refuses anything else so the webview cannot read arbitrary files.
     pub fn allows(&self, path: &str) -> bool {
-        let wanted = PathBuf::from(path);
-        self.tracks
+        self.track_index()
             .read()
-            .map(|tracks| {
-                tracks
-                    .iter()
-                    .any(|track| PathBuf::from(&track.path) == wanted)
-            })
+            .map(|index| index.paths.contains_key(Path::new(path)))
             .unwrap_or(false)
     }
 
     /// Embedded artwork written next to the settings as a small cache file.
     pub fn cover(&self, id: &str) -> Result<Option<Vec<u8>>> {
-        let Some(track) = self.tracks().into_iter().find(|track| track.id == id) else {
+        let Some(path) = id.strip_prefix("local:") else {
             return Ok(None);
         };
-        let cache_path = self.cache_dir.join(format!("{:x}.img", md5ish(&track.id)));
+        let index = self
+            .track_index()
+            .read()
+            .map_err(|_| Error::io("track index is locked"))?;
+        let Some(&position) = index.paths.get(Path::new(path)) else {
+            return Ok(None);
+        };
+        if index.tracks[position].id != id && !index.tracks.iter().any(|track| track.id == id) {
+            return Ok(None);
+        }
+        drop(index);
+        let cache_path = self.cache_dir.join(format!("{:x}.img", md5ish(id)));
         if let Ok(bytes) = std::fs::read(&cache_path) {
             return Ok(Some(bytes));
         }
-        let Some(picture) = read_picture(Path::new(&track.path)) else {
+        let Some(picture) = read_picture(Path::new(path)) else {
             return Ok(None);
         };
         let _ = std::fs::write(&cache_path, &picture);
@@ -533,9 +825,7 @@ fn looks_like_image(bytes: &[u8]) -> bool {
     jpeg || png || gif || webp
 }
 
-/// Music files under one folder, in walk order.
-fn walk_root(root: &str, count: &mut usize, progress: &dyn Fn(usize)) -> Vec<LocalTrack> {
-    let mut found = Vec::new();
+fn walk_root(root: &str, found: &mut Vec<LocalTrack>, progress: &dyn Fn(usize)) {
     let mut stack = vec![PathBuf::from(root)];
     while let Some(dir) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -561,21 +851,21 @@ fn walk_root(root: &str, count: &mut usize, progress: &dyn Fn(usize)) -> Vec<Loc
                 continue;
             }
             found.push(read_track(&path, root));
-            *count += 1;
-            if *count % 200 == 0 {
-                progress(*count);
+            if found.len() % 200 == 0 {
+                progress(found.len());
             }
         }
     }
-    found
 }
 
-fn compare_tracks(a: &LocalTrack, b: &LocalTrack) -> std::cmp::Ordering {
-    a.artist
-        .to_lowercase()
-        .cmp(&b.artist.to_lowercase())
-        .then(a.album.to_lowercase().cmp(&b.album.to_lowercase()))
-        .then(a.title.to_lowercase().cmp(&b.title.to_lowercase()))
+fn sort_tracks(tracks: &mut [LocalTrack]) {
+    tracks.sort_by_cached_key(|track| {
+        (
+            track.artist.to_lowercase(),
+            track.album.to_lowercase(),
+            track.title.to_lowercase(),
+        )
+    });
 }
 
 fn read_track(path: &Path, root: &str) -> LocalTrack {
@@ -664,6 +954,241 @@ fn md5ish(value: &str) -> u64 {
     value.hash(&mut hasher);
     hasher.finish()
 }
+
+#[cfg(test)]
+mod track_tests {
+    use super::*;
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("ytmusicdt-index-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn indexed_queries_keep_substring_and_sort_order_across_pages() {
+        let mut tracks = vec![
+            LocalTrack {
+                id: "local:1".into(),
+                title: "Ёлка".into(),
+                artist: "Жанна".into(),
+                album: "Альбом".into(),
+                ..LocalTrack::default()
+            },
+            LocalTrack {
+                id: "local:2".into(),
+                title: "Dancing 🪩 Tonight".into(),
+                artist: "Жанна".into(),
+                album: "Живой альбом".into(),
+                ..LocalTrack::default()
+            },
+            LocalTrack {
+                id: "local:3".into(),
+                path: "/path/Fallback.flac".into(),
+                ..LocalTrack::default()
+            },
+        ];
+        sort_tracks(&mut tracks);
+        let index = TrackIndex::new(tracks, 7);
+        for (query, ids) in [
+            ("", vec!["local:3", "local:1", "local:2"]),
+            ("  альБОм ", vec!["local:1", "local:2"]),
+            ("ж", vec!["local:1", "local:2"]),
+            ("ЖА", vec!["local:1", "local:2"]),
+            ("АНН", vec!["local:1", "local:2"]),
+            ("фА", vec!["local:3"]),
+            ("ЁЛКА ЖАННА", vec!["local:1"]),
+            ("nG 🪩", vec!["local:2"]),
+            ("fallback.flac локальный файл", vec!["local:3"]),
+            ("\u{FEFF}локальный файл\u{FEFF}", vec!["local:3"]),
+            ("ночь", vec![]),
+        ] {
+            let first = index.page(query, 0, 1);
+            assert_eq!(first.generation, 7);
+            assert_eq!(first.library_total, 3);
+            assert_eq!(first.total, ids.len(), "{query}");
+            assert_eq!(
+                first.items.first().map(|item| item.id.as_str()),
+                ids.first().copied(),
+                "{query}"
+            );
+            let later = index.page(query, 1, usize::MAX);
+            assert_eq!(
+                later
+                    .items
+                    .iter()
+                    .map(|item| item.id.as_str())
+                    .collect::<Vec<_>>(),
+                ids.get(1..).unwrap_or_default(),
+                "{query}"
+            );
+        }
+    }
+
+    #[test]
+    fn cold_scan_runs_once_and_root_edits_keep_cache_and_generation_consistent() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let root = temp_dir("roots");
+        let one = root.join("one");
+        let two = root.join("two");
+        std::fs::create_dir(&one).unwrap();
+        std::fs::create_dir(&two).unwrap();
+        let first_track = one.join("First.mp3");
+        std::fs::write(&first_track, []).unwrap();
+        std::fs::write(two.join("Second.flac"), []).unwrap();
+        let local_json = root.join("local.json");
+        std::fs::write(
+            &local_json,
+            serde_json::json!({ "roots": [&one] }).to_string(),
+        )
+        .unwrap();
+        std::fs::write(root.join("tracks.json"), "[broken").unwrap();
+        let library = LocalLibrary::load(local_json.clone(), root.join("covers"));
+        let events = AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            let scan = || {
+                library
+                    .ensure_scan(&|_| {
+                        events.fetch_add(1, Ordering::Relaxed);
+                    })
+                    .unwrap()
+                    .total
+            };
+            let first = scope.spawn(scan);
+            let second = scope.spawn(scan);
+            assert_eq!(first.join().unwrap(), 1);
+            assert_eq!(second.join().unwrap(), 1);
+        });
+        assert_eq!(events.load(Ordering::Relaxed), 1);
+        assert!(library.allows(first_track.to_str().unwrap()));
+        assert!(library.allows(one.join(".").join("First.mp3").to_str().unwrap()));
+        assert!(!library.allows(one.join("first.mp3").to_str().unwrap()));
+        assert!(!library.allows(root.join("one-backup").join("First.mp3").to_str().unwrap()));
+
+        let generation = library.status().unwrap().generation;
+        std::fs::write(one.join("Added since scan.mp3"), []).unwrap();
+        let added = library
+            .add_root_and_scan(two.to_str().unwrap(), &|_| {})
+            .unwrap();
+        assert_eq!((added.found, added.status.total), (1, 2));
+        assert!(library.search("", 0, 100, Some(generation)).is_err());
+        let duplicate = library
+            .add_root_and_scan(two.to_str().unwrap(), &|_| panic!("scanned twice"))
+            .unwrap();
+        assert_eq!(duplicate.status.generation, added.status.generation);
+
+        let removed = library.remove_root(two.to_str().unwrap()).unwrap();
+        assert_eq!(removed.roots, vec![one.to_str().unwrap()]);
+        assert_eq!(removed.total, 1);
+        assert!(!library.allows(two.join("Second.flac").to_str().unwrap()));
+
+        let warm = LocalLibrary::load(local_json, root.join("covers"));
+        let warm_status = warm.ensure_scan(&|_| panic!("walked warm cache")).unwrap();
+        assert_eq!(warm_status.total, 1);
+        assert_eq!(
+            warm.search("first", 0, 100, Some(warm_status.generation))
+                .unwrap()
+                .total,
+            1
+        );
+        assert_eq!(warm.scan(&|_| {}).unwrap().total, 2);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[ignore = "synthetic 21,700-track timing and payload benchmark"]
+    fn local_index_benchmark() {
+        use std::time::Instant;
+        const COUNT: usize = 21_700;
+        let root = temp_dir("benchmark");
+        let store_path = root.join("local.json");
+        let music = root.join("Music").to_string_lossy().into_owned();
+        std::fs::write(
+            &store_path,
+            serde_json::json!({ "roots": [&music] }).to_string(),
+        )
+        .unwrap();
+        let mut tracks: Vec<_> = (0..COUNT)
+            .map(|n| {
+                let artist = format!("Исполнитель {:03}", n % 617);
+                let album = format!("Альбом {:02}", n % 31);
+                let title = format!("Трек {n:05} — длинное название композиции");
+                let path = format!("{music}/{artist}/{album}/{title}.flac");
+                LocalTrack {
+                    id: format!("local:{path}"),
+                    path,
+                    title,
+                    artist,
+                    album,
+                    duration: Some(185),
+                    has_cover: n % 4 != 0,
+                    root: music.clone(),
+                }
+            })
+            .collect();
+        sort_tracks(&mut tracks);
+        let full_payload = serde_json::to_vec(&tracks).unwrap();
+        std::fs::write(root.join("tracks.json"), &full_payload).unwrap();
+
+        let start = Instant::now();
+        let library = LocalLibrary::load(store_path, root.join("covers"));
+        let status = library
+            .ensure_scan(&|_| panic!("benchmark must not touch a music root"))
+            .unwrap();
+        let warm_index = start.elapsed();
+        assert_eq!(status.total, COUNT);
+        let first = library.search("", 0, 100, Some(status.generation)).unwrap();
+        assert_eq!(first.items.len(), 100);
+        let first_payload = serde_json::to_vec(&first).unwrap();
+        let queries: Vec<_> = (0..30)
+            .map(|n| format!("исполнитель {:03}", n * 17))
+            .collect();
+        let start = Instant::now();
+        let indexed: Vec<_> = queries
+            .iter()
+            .map(|query| library.search(query, 0, 100, None).unwrap().total)
+            .collect();
+        let indexed_time = start.elapsed();
+        let start = Instant::now();
+        let linear: Vec<_> = queries
+            .iter()
+            .map(|query| {
+                tracks
+                    .iter()
+                    .filter(|track| {
+                        format!("{} {} {}", track.title, track.artist, track.album)
+                            .to_lowercase()
+                            .contains(query)
+                    })
+                    .count()
+            })
+            .collect();
+        let linear_time = start.elapsed();
+        assert_eq!(indexed, linear);
+
+        let start = Instant::now();
+        for offset in (0..COUNT).step_by(MAX_TRACK_PAGE) {
+            let page = library
+                .search("исполнитель", offset, usize::MAX, Some(status.generation))
+                .unwrap();
+            let end = (offset + MAX_TRACK_PAGE).min(COUNT);
+            assert_eq!(page.total, COUNT);
+            assert!(page
+                .items
+                .iter()
+                .map(|item| &item.id)
+                .eq(tracks[offset..end].iter().map(|item| &item.id)));
+        }
+        let elapsed = start.elapsed();
+        println!(
+            "{COUNT} tracks: cached index {warm_index:?}, 100-row IPC {} vs full {} bytes, 30 indexed filters {indexed_time:?} vs linear {linear_time:?}, all queue pages {elapsed:?}",
+            first_payload.len(), full_payload.len(),
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
 #[cfg(test)]
 mod archive_tests {
     use super::*;

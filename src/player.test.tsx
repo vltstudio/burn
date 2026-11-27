@@ -206,6 +206,44 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
+describe("clip audio handoff", () => {
+  it("pauses audio, ignores the audio shortcut during a clip, and resumes the same position", async () => {
+    await start();
+    const source = audio();
+    source.currentTime = 43;
+    let release!: () => void;
+    await update(() => { release = player.suspendForClip(); });
+    expect(source.paused).toBe(true);
+    await update(() => player.toggle());
+    expect(source.paused).toBe(true);
+    await update(release);
+    expect(audio()).toBe(source);
+    expect(source.currentTime).toBe(43);
+    expect(player.playing).toBe(true);
+  });
+
+  it("does not start previously paused audio when leaving a clip", async () => {
+    await start();
+    await update(() => player.toggle());
+    let release!: () => void;
+    await update(() => { release = player.suspendForClip(); });
+    await update(release);
+    expectStopped();
+  });
+
+  it("does not revive the previous track after a queue change", async () => {
+    await start();
+    const old = audio();
+    let release!: () => void;
+    await update(() => { release = player.suspendForClip(); });
+    await start([queued]);
+    await update(release);
+    expect(old.paused).toBe(true);
+    expect(player.current).toBe(queued);
+    expect(player.playing).toBe(true);
+  });
+});
+
 describe("queue and stream regressions", () => {
   it("selects the original requested row after filtering unplayable items", async () => {
     await start([track("invalid", { videoId: null }), seed, queued], 2);

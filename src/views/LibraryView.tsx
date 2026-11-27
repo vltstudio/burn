@@ -1,18 +1,19 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, ApiFailure } from "../api";
-import { Archive, ArchiveRestore, ExternalLink, FolderOpen, ImagePlus, ListMusic, RefreshCw, Search, X } from "lucide-react";
+import { Archive, ArchiveRestore, ExternalLink, ImagePlus, ListMusic, RefreshCw } from "lucide-react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { Shelf } from "../components/Shelf";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useLibrary } from "../library";
 import { LiquidWaveSpinner } from "../components/ui/liquid-spinner";
 import { SpotifyImportDialog } from "../components/SpotifyImportDialog";
+import { YandexImportDialog } from "../components/YandexImportDialog";
 import { usePlayback } from "../player";
-import type { ArchivedPlaylist, AuthStatus, Detail, LibraryTab, LocalTrack, MediaItem, Section } from "../types";
-import { favoriteToItem, localToItem } from "../ui/format";
+import type { ArchivedPlaylist, AuthStatus, Detail, LibraryTab, MediaItem, Section } from "../types";
+import { favoriteToItem } from "../ui/format";
 import { Cover } from "../ui/cover";
 import { LikedPlaylistHeader } from "../components/LikedPlaylist";
 import { isSpecialLikedPlaylist, rememberSpotifyImport, useSpotifyLikedPlaylists } from "../ui/liked-playlists";
+import { LocalLibraryTab } from "./LocalLibraryTab";
 
 type Tab = LibraryTab;
 
@@ -75,10 +76,6 @@ export function LibraryView({
     favoriteSync,
     accountKey: sourceAccount,
   } = useLibrary();
-  const [localTracks, setLocalTracks] = useState<LocalTrack[] | null>(null);
-  const [localRoots, setLocalRoots] = useState<string[]>([]);
-  const [localQuery, setLocalQuery] = useState("");
-  const [localLimit, setLocalLimit] = useState(200);
   const [tab, setTab] = useState<Tab>(initialTab ?? "playlists");
   const [library, setLibrary] = useState<{
     account: string;
@@ -87,13 +84,13 @@ export function LibraryView({
     spotify: { browseId: string; detail: Detail } | null;
   }>({ account: "", shelves: {}, liked: null, spotify: null });
   const [error, setError] = useState<{ tab: Tab; account: string; message: string } | null>(null);
-  const [localError, setLocalError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [loadingMore, setLoadingMore] = useState(false);
   const [moreError, setMoreError] = useState<string | null>(null);
   const moreGeneration = useRef(0);
   const morePending = useRef(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [yandexOpen, setYandexOpen] = useState(false);
   const importAccount = useRef<string | null>(null);
 
   const signedIn = Boolean(auth?.signedIn);
@@ -122,39 +119,6 @@ export function LibraryView({
     setMoreError(null);
     return () => { ++moreGeneration.current; };
   }, [tab, accountKey, reloadKey, spotifyBrowseId]);
-
-  useEffect(() => {
-    if (tab !== "local") return;
-    let cancelled = false;
-    let request = 0;
-    let unlisten: UnlistenFn | undefined;
-    const reload = () => {
-      const token = ++request;
-      setLocalError(null);
-      void Promise.all([api.localTracks(), api.localRoots()])
-        .then(([tracks, roots]) => {
-          if (cancelled || request !== token) return;
-          setLocalTracks(tracks);
-          setLocalRoots(roots);
-        })
-        .catch((failure) => {
-          if (!cancelled && request === token) {
-            setLocalError(failure instanceof ApiFailure ? failure.message : String(failure));
-          }
-        });
-    };
-    reload();
-    void listen<{ found: number; done: boolean }>("local-scan", (event) => {
-      if (!cancelled && event.payload.done) reload();
-    }).then((dispose) => {
-      if (cancelled) dispose();
-      else unlisten = dispose;
-    }).catch(() => undefined);
-    return () => {
-      cancelled = true;
-      unlisten?.();
-    };
-  }, [tab, reloadKey]);
 
   useEffect(() => {
     if (!signedIn) {
@@ -188,17 +152,6 @@ export function LibraryView({
     void load();
     return () => { cancelled = true; };
   }, [tab, signedIn, accountKey, activeShelves, liked, spotify, spotifyBrowseId, reloadKey]);
-
-  // A sample library holds tens of thousands of files, so the tab pages its
-  // rows and filters before rendering instead of pushing them all into the DOM.
-  const localItems = useMemo(() => (localTracks ?? []).map(localToItem), [localTracks]);
-  const filteredLocal = useMemo(() => {
-    const query = localQuery.trim().toLowerCase();
-    if (!query) return localItems;
-    return localItems.filter((item) =>
-      `${item.title} ${item.subtitle} ${item.album?.name ?? ""}`.toLowerCase().includes(query),
-    );
-  }, [localItems, localQuery]);
 
   const sourceDetail = tab === "spotify-favorites" ? spotify : liked;
   const likedTracks: MediaItem[] =
@@ -246,7 +199,8 @@ export function LibraryView({
   };
 
   const renderContent = () => {
-    const onlineTab = tab !== "local" && tab !== "archive" && tab !== "favorites";
+    if (tab === "local") return <LocalLibraryTab onOpen={onOpen} onOpenLocalSettings={onOpenLocalSettings} />;
+    const onlineTab = tab !== "archive" && tab !== "favorites";
     if (onlineTab && !signedIn) {
       return (
         <div className="signin-card">
@@ -256,8 +210,7 @@ export function LibraryView({
         </div>
       );
     }
-    const activeError = tab === "local" ? localError
-      : onlineTab && error?.tab === tab && error.account === accountKey ? error.message : null;
+    const activeError = onlineTab && error?.tab === tab && error.account === accountKey ? error.message : null;
     if (activeError) {
       return (
         <div className="empty">
@@ -275,81 +228,6 @@ export function LibraryView({
           size="md"
           words={["Загружаем библиотеку…", "Читаем плейлисты…", "Собираем альбомы…"]}
         />
-      );
-    }
-
-    if (tab === "local") {
-      if (!localTracks) return <LiquidWaveSpinner size="md" words={["Сканируем папки…"]} />;
-      if (localTracks.length === 0) {
-        return (
-          <div className="empty">
-            <FolderOpen size={26} strokeWidth={1.3} className="empty-glyph" />
-            <div className="empty-title">Локальных треков пока нет</div>
-            <div className="empty-text">
-              {localRoots.length === 0
-                ? "Добавьте папку с музыкой в настройках — приложение просканирует её и запомнит треки."
-                : "Папки добавлены, но музыкальных файлов в них не нашлось."}
-            </div>
-            {localRoots.length === 0 ? (
-              <button className="ghost-button" onClick={onOpenLocalSettings}>Настроить папки</button>
-            ) : null}
-          </div>
-        );
-      }
-      const shown = filteredLocal.slice(0, localLimit);
-      return (
-        <>
-          <div className="block-head local-tools">
-            <h2>На этом компьютере</h2>
-            <span className="block-count">
-              {localQuery.trim() ? `${filteredLocal.length} из ${localItems.length}` : localItems.length}
-            </span>
-            <div className="local-filter-box">
-              <Search size={16} aria-hidden />
-              <input
-                className="local-filter"
-                value={localQuery}
-                placeholder="Фильтр по локальным трекам"
-                aria-label="Фильтр по названию, исполнителю или альбому"
-                spellCheck={false}
-                onChange={(event) => {
-                  setLocalQuery(event.target.value);
-                  setLocalLimit(200);
-                }}
-              />
-              {localQuery ? (
-                <button onClick={() => { setLocalQuery(""); setLocalLimit(200); }} aria-label="Очистить фильтр">
-                  <X size={15} />
-                </button>
-              ) : null}
-            </div>
-          </div>
-          {shown.length === 0 ? (
-            <div className="empty">
-              <div className="empty-title">Ничего не нашлось</div>
-              <div className="empty-text">Попробуйте другой запрос.</div>
-            </div>
-          ) : (
-            <Shelf
-              section={{ title: null, layout: "list", items: shown, continuation: null }}
-              currentVideoId={player.current?.videoId ?? null}
-              isPlaying={player.playing}
-              onPlayList={player.playItems}
-              onPlay={(item) => player.playItems([item], 0)}
-              onOpen={onOpen}
-            />
-          )}
-          {filteredLocal.length > shown.length ? (
-            <div className="more-row">
-              <button
-                className="ghost-button"
-                onClick={() => setLocalLimit((current) => current + 400)}
-              >
-                Показать ещё {Math.min(400, filteredLocal.length - shown.length)}
-              </button>
-            </div>
-          ) : null}
-        </>
       );
     }
 
@@ -583,10 +461,14 @@ export function LibraryView({
             </button>
           ))}
         </div>
-        <button className="ghost-button library-import" onClick={openImport}>
-          <ListMusic size={15} />
-          Импорт из Spotify
-        </button>
+        <div className="library-import library-import-group" aria-label="Импорт плейлистов">
+          <button className="ghost-button" onClick={openImport}>
+            <ListMusic size={15} /> Импорт из Spotify
+          </button>
+          <button className="ghost-button" onClick={() => setYandexOpen(true)}>
+            <ListMusic size={15} /> Импорт из Яндекс Музыки
+          </button>
+        </div>
       </header> : null}
       {renderContent()}
       <SpotifyImportDialog
@@ -594,6 +476,15 @@ export function LibraryView({
         onClose={() => setImportOpen(false)}
         onImported={(result, likedImport) => {
           if (result && typeof likedImport === "boolean") rememberSpotifyImport(importAccount.current, result.playlistId, likedImport);
+          void refreshPlaylists();
+          setLibrary((current) => ({ ...current, shelves: {}, liked: null, spotify: null }));
+          setReloadKey((key) => key + 1);
+        }}
+      />
+      <YandexImportDialog
+        open={yandexOpen}
+        onClose={() => setYandexOpen(false)}
+        onImported={() => {
           void refreshPlaylists();
           setLibrary((current) => ({ ...current, shelves: {}, liked: null, spotify: null }));
           setReloadKey((key) => key + 1);

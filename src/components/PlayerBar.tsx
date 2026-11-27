@@ -22,6 +22,9 @@ import { Slider } from "../ui/slider";
 import { FullPlayer } from "./FullPlayer";
 import { PlaylistPicker } from "./PlaylistPicker";
 import VolumeSlider from "./ui/volume-slider";
+import { YouTubeSaveButton } from "./YouTubeSaveButton";
+
+const QUEUE_PAGE_SIZE = 100;
 
 export function PlayerBar() {
   const player = usePlayer();
@@ -40,6 +43,7 @@ export function PlayerBar() {
     index: currentIndex,
   } = player;
   const [queueOpen, setQueueOpen] = useState(false);
+  const [queuePage, setQueuePage] = useState(0);
   const [volumeOpen, setVolumeOpen] = useState(false);
   const volumeCloseTimer = useRef<number | null>(null);
 
@@ -79,7 +83,10 @@ export function PlayerBar() {
 
   useEffect(() => {
     if (queue.length === 0) setQueueOpen(false);
-  }, [queue.length]);
+    setQueuePage(Math.floor(Math.max(0, currentIndex) / QUEUE_PAGE_SIZE));
+  }, [currentIndex, queue.length]);
+  const queuePages = Math.max(1, Math.ceil(queue.length / QUEUE_PAGE_SIZE));
+  const queueStart = Math.min(queuePage, queuePages - 1) * QUEUE_PAGE_SIZE;
 
   return (
     <footer className={`player ${current ? "" : "idle"}`} aria-hidden={current ? undefined : true}>
@@ -99,8 +106,8 @@ export function PlayerBar() {
             </span>
           </button>
           <div className="pb-text">
-            <div className="pb-title">{current?.title ?? ""}</div>
-            <div className="pb-sub">
+            <div className="pb-title" title={current?.title}>{current?.title ?? ""}</div>
+            <div className="pb-sub" title={current?.artists.map((artist) => artist.name).join(", ") || current?.subtitle}>
               <ArtistNames artists={current?.artists ?? []} fallback={current?.subtitle} />
             </div>
           </div>
@@ -163,6 +170,7 @@ export function PlayerBar() {
             )}
           </button>
           {current?.source !== "local" ? <PlaylistPicker videoId={current?.videoId ?? null} placement="up" /> : null}
+          {current ? <YouTubeSaveButton item={current} /> : null}
           <button
             className={`ctl small ${queueOpen ? "active" : ""}`}
             onClick={() => setQueueOpen((value) => !value)}
@@ -230,7 +238,8 @@ export function PlayerBar() {
             <span className="queue-count">{queue.length}</span>
           </div>
           <div className="queue-list">
-            {queue.map((item, index) => {
+            {queue.slice(queueStart, queueStart + QUEUE_PAGE_SIZE).map((item, offset) => {
+              const index = queueStart + offset;
               const active = index === currentIndex;
               return (
                 <button
@@ -253,6 +262,13 @@ export function PlayerBar() {
               );
             })}
           </div>
+          {queuePages > 1 ? (
+            <nav className="queue-pages" aria-label="Страницы очереди">
+              <button className="ghost-button" disabled={queuePage <= 0} onClick={() => setQueuePage(queuePage - 1)}>Назад</button>
+              <span>{queueStart + 1}–{Math.min(queueStart + QUEUE_PAGE_SIZE, queue.length)} из {queue.length}</span>
+              <button className="ghost-button" disabled={queuePage >= queuePages - 1} onClick={() => setQueuePage(queuePage + 1)}>Далее</button>
+            </nav>
+          ) : null}
         </div>
       ) : null}
     </footer>

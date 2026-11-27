@@ -1,5 +1,6 @@
 import { ListPlus, Plus } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useLibrary } from "../library";
 
 interface Props {
@@ -19,24 +20,54 @@ export function PlaylistPicker({ videoId, placement = "down", className, title }
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
-  const [upward, setUpward] = useState(placement === "up");
   const boxRef = useRef<HTMLDivElement | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const panelId = useId();
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open) return;
+    const position = () => {
+      const anchor = triggerRef.current?.getBoundingClientRect();
+      const panel = panelRef.current;
+      if (!anchor || !panel) return;
+      const width = Math.min(246, window.innerWidth - 16);
+      const above = anchor.top - 16;
+      const below = window.innerHeight - anchor.bottom - 16;
+      const upward = placement === "up" ? above >= Math.min(275, below) : below < Math.min(275, above);
+      panel.style.left = `${Math.max(8, Math.min(anchor.right - width, window.innerWidth - width - 8))}px`;
+      panel.style.top = upward ? "auto" : `${anchor.bottom + 6}px`;
+      panel.style.bottom = upward ? `${window.innerHeight - anchor.top + 6}px` : "auto";
+      panel.style.width = `${width}px`;
+      panel.style.maxHeight = `${Math.max(0, upward ? above : below)}px`;
+    };
     const onPointerDown = (event: PointerEvent) => {
-      if (!boxRef.current?.contains(event.target as Node)) setOpen(false);
+      const target = event.target as Node;
+      if (!boxRef.current?.contains(target) && !panelRef.current?.contains(target)) setOpen(false);
     };
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      setOpen(false);
+      triggerRef.current?.focus();
     };
+    const onScroll = (event: Event) => {
+      if (event.target instanceof Node && panelRef.current?.contains(event.target)) return;
+      setOpen(false);
+    };
+    position();
+    panelRef.current?.querySelector<HTMLElement>("button:not(:disabled), input")?.focus({ preventScroll: true });
     window.addEventListener("pointerdown", onPointerDown);
     window.addEventListener("keydown", onKey);
+    window.addEventListener("resize", position);
+    window.addEventListener("scroll", onScroll, true);
     return () => {
       window.removeEventListener("pointerdown", onPointerDown);
       window.removeEventListener("keydown", onKey);
+      window.removeEventListener("resize", position);
+      window.removeEventListener("scroll", onScroll, true);
     };
-  }, [open]);
+  }, [open, placement]);
 
   useEffect(() => {
     if (!open) setDraft("");
@@ -48,21 +79,20 @@ export function PlaylistPicker({ videoId, placement = "down", className, title }
     <div className={`picker ${className ?? ""}`} ref={boxRef}>
       <button
         className="ctl small"
+        ref={triggerRef}
         title={disabled ? "Выберите трек" : (title ?? "Добавить в плейлист")}
+        aria-label={title ?? "Добавить в плейлист"}
+        aria-haspopup="dialog"
+        aria-controls={open ? panelId : undefined}
+        aria-expanded={open}
         disabled={disabled}
-        onClick={() => {
-          // Panels are clipped by the scrolling list, so flip them when the
-          // trigger sits too close to the bottom of the window.
-          const rect = boxRef.current?.getBoundingClientRect();
-          if (rect) setUpward(rect.bottom + 280 > window.innerHeight);
-          setOpen((value) => !value);
-        }}
+        onClick={() => setOpen((value) => !value)}
       >
         <ListPlus size={15} strokeWidth={1.7} />
       </button>
 
-      {open && videoId ? (
-        <div className={`picker-panel ${upward ? "up" : "down"}`} role="menu">
+      {open && videoId ? createPortal(
+        <div ref={panelRef} id={panelId} className="picker-panel picker-portal" role="dialog" aria-label="Добавить в плейлист" onClick={(event) => event.stopPropagation()}>
           <div className="picker-head">В плейлист</div>
           <div className="picker-list">
             {playlists.map((playlist) => (
@@ -115,7 +145,7 @@ export function PlaylistPicker({ videoId, placement = "down", className, title }
               <Plus size={14} strokeWidth={1.9} />
             </button>
           </div>
-        </div>
+        </div>, document.body
       ) : null}
     </div>
   );

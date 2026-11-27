@@ -1,0 +1,88 @@
+.clip-mode {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  justify-content: safe center;
+  gap: 14px;
+  inline-size: 100%;
+  block-size: 100%;
+  min-inline-size: 0;
+  min-block-size: 0;
+  overflow: auto;
+}
+
+.clip-mode__player {
+  display: block;
+  inline-size: min(100%, 960px, 128dvh);
+  min-inline-size: 200px;
+  min-block-size: 200px;
+  max-block-size: min(72dvh, 540px);
+  flex: 0 1 auto;
+  aspect-ratio: 16 / 9;
+  block-size: auto;
+  border: 0;
+  border-radius: 12px;
+  background: #000;
+}
+
+.clip-mode__footer,
+.clip-mode__actions,
+.clip-mode__status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  text-align: center;
+  gap: 9px;
+}
+
+.clip-mode__footer {
+  padding: 0 8px;
+}
+
+.clip-mode__status {
+  margin: 0 4px;
+  color: var(--muted, #b4aaa4);
+  font-size: 13px;
+}
+
+.clip-mode__actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-block-size: 36px;
+  padding: 5px 12px;
+  border: 1px solid #ffffff23;
+  border-radius: 999px;
+  color: var(--text, #f3efec);
+  background: #ffffff0b;
+  font-size: 13px;
+}
+
+.clip-mode__actions button:hover {
+  background: #ffffff20;
+}
+
+.clip-mode__actions button:focus-visible {
+  outline: 2px solid var(--accent, #ffb28a);
+  outline-offset: 2px;
+}
+
+.clip-mode__spinner {
+  inline-size: 15px;
+  block-size: 15px;
+  border: 2px solid #ffffff30;
+  border-block-start-color: currentColor;
+  border-radius: 50%;
+  animation: clip-mode-spin .8s linear infinite;
+}
+
+@keyframes clip-mode-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .clip-mode__spinner { animation: none; }
+}

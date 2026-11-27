@@ -70,6 +70,8 @@ function Shell({
   const contentRef = useRef<HTMLDivElement | null>(null);
 
   const route = stack[stack.length - 1];
+  const routeKey = route.name === "detail" ? `detail-${route.browseId}`
+    : route.name === "library" ? `library-${route.tab ?? "playlists"}` : route.name;
 
   // Views ask YouTube Music for their data once, on mount. Signing in changes
   // every answer, so the content area is remounted when that flips.
@@ -115,7 +117,7 @@ function Shell({
 
   useEffect(() => {
     contentRef.current?.scrollTo({ top: 0 });
-  }, [route]);
+  }, [routeKey]);
 
   const navigate = useCallback((next: Route) => setStack([next]), []);
 
@@ -175,6 +177,7 @@ function Shell({
 
             <UpdateNotice onOpen={() => setSettingsTab("updates")} />
             <div className="content" ref={contentRef} key={dataEpoch}>
+              <div className="route-surface" key={routeKey}>
               {route.name === "search" ? (
                 <SearchView
                   query={searchQuery}
@@ -186,7 +189,6 @@ function Shell({
               {route.name === "home" ? <HomeView onOpen={openItem} /> : null}
               {route.name === "library" ? (
                 <LibraryView
-                  key={`library-${route.tab ?? "playlists"}`}
                   initialTab={route.tab}
                   auth={auth}
                   onOpen={openItem}
@@ -202,6 +204,7 @@ function Shell({
                   onBack={back}
                 />
               ) : null}
+              </div>
             </div>
           </main>
 
