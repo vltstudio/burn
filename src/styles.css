@@ -862,6 +862,26 @@ select {
   flex: 1;
 }
 
+.tr-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* A favourite that lives on disk: the arrow reads as "available offline". */
+.tr-offline {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  color: #7fd08b;
+}
+
+.tr-offline.pending {
+  color: var(--faint);
+  opacity: 0.6;
+}
+
 .tr-mobile-artists {
   display: none;
   overflow: hidden;
