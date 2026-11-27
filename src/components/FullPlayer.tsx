@@ -4,8 +4,8 @@ import {
   ChevronDown, ChevronLeft, ChevronRight, ListMusic, Maximize, Mic2, Minimize, Pause, Play,
   Repeat, Repeat1, Shuffle, SkipBack, SkipForward, Video, Volume2, VolumeX,
 } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { usePlayer } from "../player";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { usePlayer, type ClipAudioHandoff } from "../player";
 import type { MediaItem } from "../types";
 import { TrackCover } from "../ui/cover";
 import { ArtistNames } from "../ui/artist-links";
@@ -14,6 +14,7 @@ import { Slider } from "../ui/slider";
 import { KaraokeLyrics } from "./KaraokeLyrics";
 import { ClipMode } from "./ClipMode";
 import { WindowControls } from "./WindowControls";
+import { useFullPlayerArtwork } from "./useFullPlayerArtwork";
 import "./full-player.css";
 
 type Pane = "meta" | "queue" | "lyrics";
@@ -29,15 +30,17 @@ type FullscreenSession = {
 export function FullPlayer({ current, onClose }: { current: MediaItem; onClose: () => void }) {
   const player = usePlayer();
   const { playing, loading, progress, duration, shuffle, repeat, muted, volume, queue, index } = player;
+  const artwork = useFullPlayerArtwork(current);
   const dialogRef = useRef<HTMLDialogElement>(null);
   const fullscreenSession = useRef<FullscreenSession>(null);
   const [pane, setPane] = useState<Pane>("meta");
-  const [clipTarget, setClipTarget] = useState<string | null>(null);
+  const [clipTarget, setClipTarget] = useState<{ key: string; audio: ClipAudioHandoff } | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
   const clipId = current.localPath || current.source === "local" || current.kind === "episode" ? null : current.videoId;
   const clipKey = clipId ? `${index}:${clipId}` : null;
-  const clipActive = clipKey !== null && clipTarget === clipKey;
-  const suspendForClip = player.suspendForClip;
+  const clipSession = clipTarget?.key === clipKey && clipTarget.audio.snapshot() ? clipTarget : null;
+  const clipActive = clipSession !== null;
+  const closeClip = useCallback(() => setClipTarget(null), []);
   const fullscreenTitle = fullscreen ? "Выйти из полноэкранного режима" : "На весь экран";
   const next = queue[player.upNext[0]];
   const artistName = current.artists[0]?.name ?? current.subtitle;
@@ -104,18 +107,15 @@ export function FullPlayer({ current, onClose }: { current: MediaItem; onClose: 
     }
   };
 
-  useLayoutEffect(() => {
-    if (clipActive) return suspendForClip();
-  }, [clipActive, suspendForClip]);
-
   useEffect(() => {
-    setClipTarget((target) => target === clipKey ? target : null);
-  }, [clipKey]);
+    if (!clipSession) setClipTarget(null);
+  }, [clipSession]);
 
   return (
     <dialog
       ref={dialogRef}
       className="full-player"
+      style={artwork.style}
       aria-labelledby="fp-heading"
       data-tauri-drag-region
       onCancel={(event) => {
@@ -124,7 +124,9 @@ export function FullPlayer({ current, onClose }: { current: MediaItem; onClose: 
       }}
     >
       <WindowControls />
-      <TrackCover item={current} className="fp-wash" eager />
+      <div className="fp-artwork" aria-hidden onLoadCapture={artwork.onLoad}>
+        <TrackCover item={current} large eager />
+      </div>
       <div className="fp-shell" data-tauri-drag-region>
         <header className="fp-head" data-tauri-drag-region>
           <button className="fp-collapse" aria-label="Свернуть плеер" onClick={close} autoFocus>
@@ -160,7 +162,7 @@ export function FullPlayer({ current, onClose }: { current: MediaItem; onClose: 
                 aria-label={clipActive ? "Закрыть клип" : "Клип"}
                 aria-pressed={clipActive}
                 title={clipActive ? "Вернуться к музыке" : "Найти клип на YouTube"}
-                onClick={() => setClipTarget(clipActive ? null : clipKey)}
+                onClick={() => setClipTarget(clipActive || !clipKey ? null : { key: clipKey, audio: player.createClipHandoff() })}
               >
                 <Video size={18} /> <span>Клип</span>
               </button>
@@ -178,9 +180,9 @@ export function FullPlayer({ current, onClose }: { current: MediaItem; onClose: 
           </div>
         </header>
 
-        {clipActive && clipId ? (
+        {clipSession && clipId ? (
           <div className="fp-stage fp-stage--clip">
-            <ClipMode videoId={clipId} title={current.title} kind={current.kind} onClose={() => setClipTarget(null)} />
+            <ClipMode videoId={clipId} title={current.title} kind={current.kind} audio={clipSession.audio} onClose={closeClip} />
           </div>
         ) : (
         <div className={`fp-stage ${pane !== "meta" ? "fp-stage--split" : ""}`}>

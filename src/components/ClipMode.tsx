@@ -1,19 +1,21 @@
 import { ExternalLink, Music2, VideoOff } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { api } from "../api";
+import type { ClipAudioHandoff } from "../player";
 import "./clip-mode.css";
 
 interface ClipModeProps {
   videoId: string;
   title: string;
   kind?: string;
+  audio: ClipAudioHandoff;
   onClose: () => void;
 }
 
 type Relay = { url: string; origin: string; channel: string; videoId: string };
 type ClipState =
   | { status: "searching" | "unavailable" }
-  | { status: "connecting" | "ready"; relay: Relay }
+  | { status: "connecting" | "starting" | "ready" | "playing"; relay: Relay }
   | { status: "error"; message: string; videoId?: string };
 
 const validVideoId = /^[\w-]{11}$/;
@@ -33,18 +35,22 @@ export function ClipMode(props: ClipModeProps) {
   return <ClipSession key={JSON.stringify([props.videoId, props.kind])} {...props} />;
 }
 
-function ClipSession({ videoId, title, kind, onClose }: ClipModeProps) {
+function ClipSession({ videoId, title, kind, audio, onClose }: ClipModeProps) {
   const iframe = useRef<HTMLIFrameElement>(null);
   const [state, setState] = useState<ClipState>({ status: "searching" });
   const [externalError, setExternalError] = useState(false);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     let active = true;
     let timeout: number | undefined;
     let relay: Relay | undefined;
+    let prepared = false;
+    let lease: ReturnType<ClipAudioHandoff["takeOver"]> = null;
 
     const fail = (code?: unknown) => {
       window.clearTimeout(timeout);
+      lease?.release();
+      lease = null;
       setState({ status: "error", message: errorMessage(code), videoId: relay?.videoId });
       relay = undefined;
     };
@@ -52,10 +58,39 @@ function ClipSession({ videoId, title, kind, onClose }: ClipModeProps) {
       const source = iframe.current?.contentWindow;
       if (!active || !relay || !source || event.source !== source || event.origin !== relay.origin
           || event.data?.channel !== relay.channel) return;
-      if (event.data.status === "ready") {
+      const { channel, origin } = relay;
+      const send = (command: string, values: Record<string, unknown>) =>
+        source.postMessage({ channel, command, ...values }, origin);
+      const { status, position } = event.data;
+      const validPosition = typeof position === "number" && Number.isFinite(position) && position >= 0;
+      if (status === "ready" && !prepared) {
+        const snapshot = audio.snapshot();
+        if (!snapshot) return fail();
+        prepared = true;
+        window.clearTimeout(timeout);
+        setState({ status: snapshot.playing ? "starting" : "ready", relay });
+        send("prepare", snapshot);
+        if (snapshot.playing) {
+          const waitingRelay = relay;
+          timeout = window.setTimeout(() => setState({ status: "ready", relay: waitingRelay }), 6_000);
+        }
+      } else if (status === "autoplay-blocked" && prepared && !lease) {
         window.clearTimeout(timeout);
         setState({ status: "ready", relay });
-      } else if (event.data.status === "error") {
+      } else if (status === "playing" && prepared && !lease && validPosition) {
+        const snapshot = audio.snapshot();
+        if (!snapshot) return fail();
+        lease = audio.takeOver();
+        if (!lease) return fail();
+        window.clearTimeout(timeout);
+        send("synchronize", snapshot);
+        setState({ status: "playing", relay });
+      } else if (status === "time" && validPosition) {
+        lease?.sync(position);
+      } else if (status === "ended" && lease) {
+        if (validPosition) lease.sync(position);
+        onClose();
+      } else if (status === "error") {
         fail(event.data.code);
       }
     };
@@ -99,13 +134,16 @@ function ClipSession({ videoId, title, kind, onClose }: ClipModeProps) {
       active = false;
       window.clearTimeout(timeout);
       window.removeEventListener("message", receive);
+      lease?.release();
     };
-  }, [videoId, kind]);
+  }, [videoId, kind, audio, onClose]);
 
-  const player = state.status === "connecting" || state.status === "ready" ? state.relay : null;
-  const waiting = state.status === "searching" || state.status === "connecting";
+  const player = "relay" in state ? state.relay : null;
+  const waiting = state.status === "searching" || state.status === "connecting" || state.status === "starting";
   const statusText = state.status === "searching" ? "Ищем клип…"
     : state.status === "connecting" ? "Загружаем плеер YouTube…"
+    : state.status === "starting" ? "Запускаем клип…"
+    : state.status === "ready" ? "Нажмите ▶ в плеере YouTube, чтобы запустить клип."
     : state.status === "unavailable" ? "У этого трека нет доступного клипа."
     : state.status === "error" ? state.message
     : "Клип";
@@ -120,7 +158,7 @@ function ClipSession({ videoId, title, kind, onClose }: ClipModeProps) {
           src={player.url}
           title={`Клип: ${title}`}
           sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"
-          allow="encrypted-media; fullscreen"
+          allow="autoplay; encrypted-media; fullscreen"
           allowFullScreen
         />
       )}

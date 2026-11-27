@@ -5,6 +5,7 @@ mod error;
 mod import;
 mod local;
 mod lyrics;
+mod quick_player;
 mod signin;
 mod spotify;
 mod yandex;
@@ -939,6 +940,10 @@ pub fn run() {
             let scanner = state.local.clone();
             let progress_app = app.handle().clone();
             app.manage(state);
+            #[cfg(windows)]
+            if let Err(error) = quick_player::setup(app) {
+                eprintln!("Could not set up the quick player: {error}");
+            }
             tauri::async_runtime::spawn_blocking(move || {
                 let _ = ensure_local_library(&progress_app, &scanner);
             });
@@ -997,6 +1002,7 @@ pub fn run() {
             settings_get,
             settings_set,
             stream_url,
+            quick_player::quick_window,
         ])
         .run(tauri::generate_context!())
         .expect("error while running BURN");

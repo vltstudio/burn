@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "quick-player",
+  "description": "Targeted playback messages for the Windows notification-area player",
+  "windows": ["quick-player"],
+  "platforms": ["windows"],
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten", "core:event:allow-emit-to"]
+}

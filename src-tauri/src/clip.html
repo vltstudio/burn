@@ -12,20 +12,91 @@
   <iframe
     id="youtube"
     title="Видеоплеер YouTube"
-    src="https://www.youtube.com/embed/__CLIP_ID__?enablejsapi=1&amp;origin=__CLIP_ORIGIN__&amp;widget_referrer=https%3A%2F%2Fcom.ytmusicdt.app&amp;playsinline=1"
+    src="https://www.youtube.com/embed/__CLIP_ID__?enablejsapi=1&amp;origin=__CLIP_ORIGIN__&amp;playsinline=1"
     referrerpolicy="strict-origin-when-cross-origin"
-    allow="encrypted-media; fullscreen"
+    allow="autoplay; encrypted-media; fullscreen"
     allowfullscreen
   ></iframe>
   <script nonce="__CLIP_CHANNEL__">
-    const notify = (status, code) => window.parent.postMessage({
-      channel: "__CLIP_CHANNEL__", status, code
+    const channel = "__CLIP_CHANNEL__";
+    const videoId = "__CLIP_ID__";
+    const notify = (status, values = {}) => window.parent.postMessage({
+      channel, status, ...values
     }, "*");
+    let player;
+    let start;
+    let started = false;
+    let synchronized = false;
+    let pendingSeek;
+    let lastTime;
+    let clock;
+    const position = () => player.getCurrentTime();
+    const setVolume = ({ volume, muted }) => {
+      if (Number.isFinite(volume)) player.setVolume(Math.min(Math.max(volume, 0), 1) * 100);
+      if (muted === true) player.mute();
+      else if (muted === false) player.unMute();
+    };
+    const reportTime = () => {
+      if (!synchronized) return;
+      const time = position();
+      if (!Number.isFinite(time) || time < 0) return;
+      if (pendingSeek) {
+        if (Math.abs(time - pendingSeek.target) > 1.5 && performance.now() < pendingSeek.until) return;
+        pendingSeek = undefined;
+      }
+      if (time === lastTime) return;
+      lastTime = time;
+      notify("time", { position: time });
+    };
+    window.addEventListener("message", (event) => {
+      const data = event.data;
+      if (event.source !== window.parent || data?.channel !== channel || !player
+          || !Number.isFinite(data.position) || data.position < 0) return;
+      if (data.command === "prepare" && !start) {
+        setVolume(data);
+        start = { videoId, startSeconds: data.position };
+        if (data.playing === true) player.loadVideoById(start);
+        else player.cueVideoById(start);
+      } else if (data.command === "synchronize" && started && !synchronized) {
+        setVolume(data);
+        const duration = player.getDuration();
+        const target = duration > 0 ? Math.min(data.position, Math.max(0, duration - 0.25)) : data.position;
+        if (Math.abs(target - position()) > 1.25) {
+          pendingSeek = { target, until: performance.now() + 1_500 };
+          player.seekTo(target, true);
+        }
+        synchronized = true;
+        reportTime();
+        clock = window.setInterval(reportTime, 200);
+      }
+    });
     window.onYouTubeIframeAPIReady = () => {
       new YT.Player("youtube", {
         events: {
-          onReady: () => notify("ready"),
-          onError: (event) => notify("error", event.data),
+          onReady: (event) => {
+            player = event.target;
+            notify("ready");
+          },
+          onStateChange: (event) => {
+            if (event.data === YT.PlayerState.PLAYING && start && !started) {
+              started = true;
+              notify("playing", { position: position() });
+            } else if (event.data === YT.PlayerState.ENDED && started) {
+              window.clearInterval(clock);
+              notify("ended", { position: position() });
+            } else {
+              reportTime();
+            }
+          },
+          onAutoplayBlocked: () => {
+            if (!start || started) return;
+            player.cueVideoById(start);
+            notify("autoplay-blocked");
+          },
+          onError: (event) => {
+            window.clearInterval(clock);
+            notify("error", { code: event.data });
+          },
         },
       });
     };

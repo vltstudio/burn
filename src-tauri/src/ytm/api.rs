@@ -97,7 +97,31 @@ pub async fn resolve_clip(ytm: &Ytm, video_id: &str, kind: Option<&str>) -> Resu
             }),
         )
         .await?;
-    Ok(parse::clip_counterpart(&response, video_id).map(str::to_owned))
+    if let Some(id) = parse::clip_counterpart(&response, video_id) {
+        return Ok(Some(id.to_owned()));
+    }
+    let Some(track) = parse::watch_track(&response, video_id) else {
+        return Ok(None);
+    };
+    if track.kind == "video" {
+        return Ok(Some(video_id.to_owned()));
+    }
+    let Some(artist) = track.artists.first() else {
+        return Ok(None);
+    };
+    if track.duration.is_none() {
+        return Ok(None);
+    }
+    let videos = ytm
+        .request(
+            "search",
+            json!({
+                "query": format!("{} {}", artist.name, track.title),
+                "params": search_params(Some("videos")),
+            }),
+        )
+        .await?;
+    Ok(parse::clip_search_match(&videos, &track))
 }
 
 fn recommendation_body(video_id: &str) -> Result<Value> {

@@ -207,18 +207,25 @@ afterEach(async () => {
 });
 
 describe("clip audio handoff", () => {
-  it("pauses audio, ignores the audio shortcut during a clip, and resumes the same position", async () => {
+  it("keeps playing until takeover, then resumes at the last clip position", async () => {
     await start();
     const source = audio();
     source.currentTime = 43;
-    let release!: () => void;
-    await update(() => { release = player.suspendForClip(); });
+    const handoff = player.createClipHandoff();
+    expect(source.paused).toBe(false);
+    expect(handoff.snapshot()).toMatchObject({ position: 43, playing: true });
+    let lease!: NonNullable<ReturnType<typeof handoff.takeOver>>;
+    source.currentTime = 61;
+    await update(() => { lease = handoff.takeOver()!; });
     expect(source.paused).toBe(true);
     await update(() => player.toggle());
     expect(source.paused).toBe(true);
-    await update(release);
+    await update(() => lease.sync(89.6));
+    expect(player.progress).toBe(89.6);
+    expect(source.currentTime).toBe(61);
+    await update(lease.release);
     expect(audio()).toBe(source);
-    expect(source.currentTime).toBe(43);
+    expect(source.currentTime).toBe(89.6);
     expect(player.playing).toBe(true);
   });
 
@@ -226,7 +233,7 @@ describe("clip audio handoff", () => {
     await start();
     await update(() => player.toggle());
     let release!: () => void;
-    await update(() => { release = player.suspendForClip(); });
+    await update(() => { release = player.createClipHandoff().takeOver()!.release; });
     await update(release);
     expectStopped();
   });
@@ -234,9 +241,12 @@ describe("clip audio handoff", () => {
   it("does not revive the previous track after a queue change", async () => {
     await start();
     const old = audio();
+    const handoff = player.createClipHandoff();
     let release!: () => void;
-    await update(() => { release = player.suspendForClip(); });
+    await update(() => { release = handoff.takeOver()!.release; });
     await start([queued]);
+    expect(handoff.snapshot()).toBeNull();
+    expect(handoff.takeOver()).toBeNull();
     await update(release);
     expect(old.paused).toBe(true);
     expect(player.current).toBe(queued);

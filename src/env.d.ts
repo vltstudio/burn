@@ -1,7 +1,1 @@
-interface ImportMetaEnv {
-  readonly PROD: boolean;
-}
-
-interface ImportMeta {
-  readonly env: ImportMetaEnv;
-}
+/// <reference types="vite/client" />

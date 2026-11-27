@@ -13,6 +13,11 @@ import type { MediaItem } from "./types";
 
 export type RepeatMode = "off" | "all" | "one";
 
+export interface ClipAudioHandoff {
+  snapshot: () => { position: number; playing: boolean; volume: number; muted: boolean } | null;
+  takeOver: () => { sync: (position: number) => void; release: () => void } | null;
+}
+
 interface PlayerApi {
   queue: MediaItem[];
   index: number;
@@ -40,7 +45,7 @@ interface PlayerApi {
   jumpTo: (index: number) => void;
   expanded: boolean;
   setExpanded: (value: boolean) => void;
-  suspendForClip: () => () => void;
+  createClipHandoff: () => ClipAudioHandoff;
 }
 
 const PlayerContext = createContext<PlayerApi | null>(null);
@@ -189,7 +194,7 @@ export function PlayerProvider({ children, onToast }: Props) {
         onToast("Превышено время ожидания воспроизведения.", "error");
       }, 30_000);
       audio.ontimeupdate = () => {
-        if (requestRef.current === token) setProgress(audio.currentTime);
+        if (requestRef.current === token && !clipLeaseRef.current) setProgress(audio.currentTime);
       };
       audio.onloadedmetadata = audio.ondurationchange = () => {
         if (requestRef.current === token) {
@@ -495,7 +500,7 @@ export function PlayerProvider({ children, onToast }: Props) {
 
   const previous = useCallback(() => {
     const audio = audioRef.current;
-    if (audio && audio.currentTime > 3) {
+    if (!clipLeaseRef.current && audio && audio.currentTime > 3) {
       cancelRadio();
       if (audio.ended) playRequestedRef.current = false;
       audio.currentTime = 0;
@@ -531,33 +536,63 @@ export function PlayerProvider({ children, onToast }: Props) {
     }
   }, [cancelRadio, load]);
 
-  const suspendForClip = useCallback(() => {
-    const lease = {};
+  const createClipHandoff = useCallback((): ClipAudioHandoff => {
     const token = requestRef.current;
-    const audio = audioRef.current;
-    const resume = playRequestedRef.current && !audio?.ended && !waitingForRadioRef.current;
-    clipLeaseRef.current = lease;
-    cancelRadio();
-    playRequestedRef.current = false;
-    audio?.pause();
-    setPlaying(false);
-    return () => {
-      if (clipLeaseRef.current !== lease) return;
-      clipLeaseRef.current = null;
-      if (!resume || !audio || requestRef.current !== token || audioRef.current !== audio || audio.ended) return;
-      playRequestedRef.current = true;
-      if (audio.src) void audio.play().catch(() => {
-        if (requestRef.current === token && !clipLeaseRef.current && audio.paused) {
-          playRequestedRef.current = false;
-          setPlaying(false);
-        }
-      });
+    const positionOf = () => audioRef.current?.currentTime ?? 0;
+    const wantsAudio = () => playRequestedRef.current && !audioRef.current?.ended && !waitingForRadioRef.current;
+    return {
+      snapshot: () => requestRef.current === token ? {
+        position: positionOf(),
+        playing: wantsAudio(),
+        volume: volumeRef.current,
+        muted: mutedRef.current,
+      } : null,
+      takeOver: () => {
+        if (requestRef.current !== token || clipLeaseRef.current) return null;
+        const lease = {};
+        const audio = audioRef.current;
+        const resume = wantsAudio();
+        let position = positionOf();
+        clipLeaseRef.current = lease;
+        cancelRadio();
+        playRequestedRef.current = false;
+        audio?.pause();
+        setPlaying(false);
+        return {
+          sync: (seconds) => {
+            if (clipLeaseRef.current !== lease || !Number.isFinite(seconds) || seconds < 0) return;
+            position = audio && Number.isFinite(audio.duration) ? Math.min(seconds, audio.duration) : seconds;
+            setProgress(position);
+          },
+          release: () => {
+            if (clipLeaseRef.current !== lease) return;
+            clipLeaseRef.current = null;
+            if (!audio || requestRef.current !== token || audioRef.current !== audio) return;
+            if (audio.src && position !== audio.currentTime) {
+              audio.currentTime = position;
+              setProgress(audio.currentTime);
+            }
+            if (!resume) return;
+            if (Number.isFinite(audio.duration) && audio.duration > 0 && position >= audio.duration) {
+              endedRef.current();
+              return;
+            }
+            playRequestedRef.current = true;
+            if (audio.src) void audio.play().catch(() => {
+              if (requestRef.current === token && !clipLeaseRef.current && audio.paused) {
+                playRequestedRef.current = false;
+                setPlaying(false);
+              }
+            });
+          },
+        };
+      },
     };
   }, [cancelRadio]);
 
   const seek = useCallback((seconds: number) => {
     const audio = audioRef.current;
-    if (!audio || !Number.isFinite(seconds) || !Number.isFinite(audio.duration)) return;
+    if (clipLeaseRef.current || !audio || !Number.isFinite(seconds) || !Number.isFinite(audio.duration)) return;
     if (waitingForRadioRef.current) cancelRadio();
     if (audio.ended) playRequestedRef.current = false;
     audio.currentTime = Math.min(Math.max(seconds, 0), audio.duration);
@@ -626,7 +661,7 @@ export function PlayerProvider({ children, onToast }: Props) {
       jumpTo,
       expanded,
       setExpanded,
-      suspendForClip,
+      createClipHandoff,
     }),
     [
       queue,
@@ -650,7 +685,7 @@ export function PlayerProvider({ children, onToast }: Props) {
       enqueue,
       jumpTo,
       expanded,
-      suspendForClip,
+      createClipHandoff,
     ],
   );
 

@@ -724,12 +724,19 @@ pub fn watch_track(response: &Value, video_id: &str) -> Option<MediaItem> {
         .pointer("/currentVideoEndpoint/watchEndpoint/videoId")?
         .as_str()?
         != video_id
+        || !clip_playable(response)
     {
         return None;
     }
     let track = watch_queue(response)?
         .into_iter()
-        .filter_map(|entry| entry.get("playlistPanelVideoRenderer"))
+        .filter_map(|entry| {
+            entry.get("playlistPanelVideoRenderer").or_else(|| {
+                entry.pointer(
+                    "/playlistPanelVideoWrapperRenderer/primaryRenderer/playlistPanelVideoRenderer",
+                )
+            })
+        })
         .find(|track| track.get("videoId").and_then(Value::as_str) == Some(video_id))?;
     panel_video(track)
 }
@@ -788,6 +795,135 @@ fn clip_playable(track: &Value) -> bool {
             .is_some_and(|status| status != "OK")
 }
 
+fn clip_title(title: &str) -> String {
+    title
+        .chars()
+        .flat_map(char::to_lowercase)
+        .filter(|ch| !matches!(ch, '\'' | '’'))
+        .map(|ch| if ch.is_alphanumeric() { ch } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn clip_video_title(title: &str) -> String {
+    let title = title.trim();
+    for (left, right) in [('(', ')'), ('[', ']')] {
+        if let Some((base, suffix)) = title
+            .strip_suffix(right)
+            .and_then(|text| text.rsplit_once(left))
+        {
+            if matches!(
+                clip_title(suffix).as_str(),
+                "official music video" | "official video"
+            ) {
+                return clip_title(base);
+            }
+        }
+    }
+    clip_title(title)
+}
+
+fn clip_duration(text: &str) -> Option<u32> {
+    if !looks_like_duration(text) {
+        return None;
+    }
+    let mut components = text.trim().split(':');
+    let mut seconds = components.next()?.parse::<u32>().ok()?;
+    for component in components {
+        let part: u32 = component.parse().ok()?;
+        if part >= 60 || component.len() != 2 {
+            return None;
+        }
+        seconds = seconds.checked_mul(60)?.checked_add(part)?;
+    }
+    (seconds > 0).then_some(seconds)
+}
+
+pub(super) fn clip_search_match(response: &Value, track: &MediaItem) -> Option<String> {
+    let artist = &track.artists.first()?.browse_id;
+    if artist.is_empty() {
+        return None;
+    }
+    let title = clip_title(&track.title);
+    if title.is_empty() {
+        return None;
+    }
+    let duration = clip_duration(track.duration.as_deref()?)?;
+    let tolerance = (duration * 8 / 100).clamp(5, 25);
+    let sections = section_list(response)?.get("contents")?.as_array()?;
+    let mut best = None::<(u32, String)>;
+    let mut tied = false;
+    for section in sections.iter().flat_map(|section| {
+        std::iter::once(section).chain(
+            section
+                .pointer("/itemSectionRenderer/contents")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten(),
+        )
+    }) {
+        let Some(rows) = section
+            .pointer("/musicShelfRenderer/contents")
+            .and_then(Value::as_array)
+        else {
+            continue;
+        };
+        for row in rows
+            .iter()
+            .filter_map(|row| row.get("musicResponsiveListItemRenderer"))
+        {
+            if !clip_playable(row)
+                || music_video_type(row).as_deref() != Some("MUSIC_VIDEO_TYPE_OMV")
+            {
+                continue;
+            }
+            let Some(candidate) = parse_responsive(row) else {
+                continue;
+            };
+            let Some(id) = candidate
+                .video_id
+                .filter(|id| valid_video_id(id) && track.video_id.as_ref() != Some(id))
+            else {
+                continue;
+            };
+            if !candidate
+                .artists
+                .first()
+                .is_some_and(|credit| &credit.browse_id == artist)
+                || clip_video_title(&candidate.title) != title
+            {
+                continue;
+            }
+            let Some(delta) = candidate
+                .duration
+                .as_deref()
+                .and_then(clip_duration)
+                .map(|value| duration.abs_diff(value))
+            else {
+                continue;
+            };
+            if delta > tolerance {
+                continue;
+            }
+            match &best {
+                Some((score, _)) if *score < delta => (),
+                Some((score, best_id)) if *score == delta => tied |= best_id != &id,
+                _ => {
+                    best = Some((delta, id));
+                    tied = false;
+                }
+            }
+        }
+    }
+    if tied {
+        None
+    } else {
+        best.map(|(_, id)| id)
+    }
+}
+
 #[cfg(test)]
 mod clip_tests {
     use super::*;
@@ -834,7 +970,10 @@ mod clip_tests {
         for kind in ["MUSIC_VIDEO_TYPE_OMV", "MUSIC_VIDEO_TYPE_UGC"] {
             let response = watch(vec![
                 wrapper(OTHER, vec![panel(OTHER, kind)]),
-                wrapper(SONG, vec![panel(OTHER, "MUSIC_VIDEO_TYPE_ATV"), panel(CLIP, kind)]),
+                wrapper(
+                    SONG,
+                    vec![panel(OTHER, "MUSIC_VIDEO_TYPE_ATV"), panel(CLIP, kind)],
+                ),
             ]);
             assert_eq!(clip_counterpart(&response, SONG), Some(CLIP));
         }
@@ -845,7 +984,13 @@ mod clip_tests {
         let response = watch(vec![
             json!({"playlistPanelVideoRenderer": panel(CLIP, "MUSIC_VIDEO_TYPE_OMV")}),
             wrapper(OTHER, vec![panel(CLIP, "MUSIC_VIDEO_TYPE_OMV")]),
-            wrapper(SONG, vec![panel(SONG, "MUSIC_VIDEO_TYPE_OMV"), panel(CLIP, "MUSIC_VIDEO_TYPE_ATV")]),
+            wrapper(
+                SONG,
+                vec![
+                    panel(SONG, "MUSIC_VIDEO_TYPE_OMV"),
+                    panel(CLIP, "MUSIC_VIDEO_TYPE_ATV"),
+                ],
+            ),
         ]);
         assert_eq!(clip_counterpart(&response, SONG), None);
         assert_eq!(clip_counterpart(&response, OTHER), None);
@@ -857,12 +1002,162 @@ mod clip_tests {
         restricted["playabilityStatus"] = json!({"status": "LOGIN_REQUIRED"});
         let mut mismatch = panel(CLIP, "MUSIC_VIDEO_TYPE_UGC");
         mismatch["navigationEndpoint"]["watchEndpoint"]["videoId"] = json!(OTHER);
-        let response = watch(vec![wrapper(SONG, vec![
-            panel("../../video", "MUSIC_VIDEO_TYPE_OMV"),
-            restricted,
-            mismatch,
-        ])]);
+        let response = watch(vec![wrapper(
+            SONG,
+            vec![
+                panel("../../video", "MUSIC_VIDEO_TYPE_OMV"),
+                restricted,
+                mismatch,
+            ],
+        )]);
         assert_eq!(clip_counterpart(&response, SONG), None);
+    }
+
+    fn search(entries: Vec<Value>) -> Value {
+        json!({"contents": {"tabbedSearchResultsRenderer": {"tabs": [
+            {"tabRenderer": {"content": {"sectionListRenderer": {"contents": [
+                {"musicShelfRenderer": {"contents": entries}}
+            ]}}}}
+        ]}}})
+    }
+
+    fn video(id: &str, title: &str, artist: &str, duration: &str, kind: &str) -> Value {
+        let mut renderer = panel(id, kind);
+        renderer["flexColumns"] = json!([
+            {"musicResponsiveListItemFlexColumnRenderer": {"text": {"runs": [{"text": title}]}}},
+            {"musicResponsiveListItemFlexColumnRenderer": {"text": {"runs": [
+                {"text": "The Band", "navigationEndpoint": {"browseEndpoint": {
+                    "browseId": artist,
+                    "browseEndpointContextSupportedConfigs": {"browseEndpointContextMusicConfig": {"pageType": "MUSIC_PAGE_TYPE_ARTIST"}}
+                }}},
+                {"text": " • "}, {"text": "2 million views"}, {"text": " • "}, {"text": duration}
+            ]}}}
+        ]);
+        json!({"musicResponsiveListItemRenderer": renderer})
+    }
+
+    fn song() -> MediaItem {
+        MediaItem {
+            video_id: Some(SONG.into()),
+            title: "Don’t Stop Me".into(),
+            artists: vec![ItemRef {
+                name: "The Band".into(),
+                browse_id: "UC-band".into(),
+            }],
+            duration: Some("4:00".into()),
+            ..MediaItem::default()
+        }
+    }
+
+    #[test]
+    fn matches_official_video_by_title_artist_and_duration_even_after_unrelated_rows() {
+        let items = vec![
+            video(
+                OTHER,
+                "Don't Stop Me",
+                "UC-imitator",
+                "4:00",
+                "MUSIC_VIDEO_TYPE_OMV",
+            ),
+            video(
+                OTHER,
+                "Don't Stop Me",
+                "UC-band",
+                "4:00",
+                "MUSIC_VIDEO_TYPE_UGC",
+            ),
+            video(
+                OTHER,
+                "Don't Stop Me (Acoustic)",
+                "UC-band",
+                "4:01",
+                "MUSIC_VIDEO_TYPE_OMV",
+            ),
+            video(
+                CLIP,
+                "Don't Stop Me [Official Music Video]",
+                "UC-band",
+                "4:12",
+                "MUSIC_VIDEO_TYPE_OMV",
+            ),
+        ];
+        assert_eq!(
+            clip_search_match(&search(items), &song()).as_deref(),
+            Some(CLIP)
+        );
+    }
+
+    #[test]
+    fn rejects_wrong_versions_missing_metadata_restrictions_and_ambiguous_matches() {
+        for title in [
+            "Don't Stop Me (Live)",
+            "Don't Stop Me (Remix)",
+            "Don't Stop Me (Remastered 2011)",
+        ] {
+            assert_eq!(
+                clip_search_match(
+                    &search(vec![video(
+                        CLIP,
+                        title,
+                        "UC-band",
+                        "4:00",
+                        "MUSIC_VIDEO_TYPE_OMV"
+                    )]),
+                    &song(),
+                ),
+                None
+            );
+        }
+        let mut restricted = video(
+            CLIP,
+            "Don't Stop Me",
+            "UC-band",
+            "4:00",
+            "MUSIC_VIDEO_TYPE_OMV",
+        );
+        restricted["musicResponsiveListItemRenderer"]["isPlayable"] = json!(false);
+        for entries in [
+            vec![restricted],
+            vec![video(
+                CLIP,
+                "Don't Stop Me",
+                "UC-band",
+                "4:25",
+                "MUSIC_VIDEO_TYPE_OMV",
+            )],
+            vec![video(
+                CLIP,
+                "Don't Stop Me",
+                "UC-band",
+                "4:99",
+                "MUSIC_VIDEO_TYPE_OMV",
+            )],
+            vec![video(
+                CLIP,
+                "Don't Stop Me",
+                "UC-band",
+                "",
+                "MUSIC_VIDEO_TYPE_OMV",
+            )],
+            vec![
+                video(
+                    CLIP,
+                    "Don't Stop Me",
+                    "UC-band",
+                    "4:02",
+                    "MUSIC_VIDEO_TYPE_OMV",
+                ),
+                video(
+                    OTHER,
+                    "Don't Stop Me",
+                    "UC-band",
+                    "3:58",
+                    "MUSIC_VIDEO_TYPE_OMV",
+                ),
+            ],
+        ] {
+            assert_eq!(clip_search_match(&search(entries), &song()), None);
+        }
     }
 }
 

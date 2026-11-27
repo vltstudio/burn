@@ -11,6 +11,7 @@ use crate::error::{Error, Result};
 use crate::{ytm, AppState};
 
 const RELAY_HTML: &str = include_str!("clip.html");
+const LOOKUP_TIMEOUT: Duration = Duration::from_secs(24);
 const RELAY_LIFETIME: Duration = Duration::from_secs(12);
 const REQUEST_TIMEOUT: Duration = Duration::from_millis(900);
 const MAX_HEADERS: usize = 4096;
@@ -22,7 +23,12 @@ pub async fn resolve_clip(
     video_id: String,
     kind: Option<String>,
 ) -> Result<Option<String>> {
-    ytm::api::resolve_clip(&state.ytm, &video_id, kind.as_deref()).await
+    timeout(
+        LOOKUP_TIMEOUT,
+        ytm::api::resolve_clip(&state.ytm, &video_id, kind.as_deref()),
+    )
+    .await
+    .map_err(|_| Error::api("Превышено время ожидания поиска клипа"))?
 }
 
 #[tauri::command]

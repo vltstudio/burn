@@ -332,6 +332,25 @@ mod probe {
         Ytm::new(http, std::env::temp_dir().join("ytmusicdt-probe-auth.json"))
     }
 
+    #[tokio::test]
+    #[ignore = "hits the live anonymous YouTube Music catalog; results can vary by region"]
+    async fn anonymous_clip_discovery() {
+        let ytm = client();
+        for (track, expected) in [
+            ("lYBUbBu4W08", Some("dQw4w9WgXcQ")),
+            ("4ujBQOzs6Lw", Some("rYEDA3JcQqw")),
+            ("ljUtuoFt-8c", Some("hTWKbfoikeg")),
+            ("HzdD8kbDzZA", Some("djV11Xbc914")),
+            ("Qd8DtYYloE8", Some("nUqV2bwfVdM")),
+        ] {
+            let found = api::resolve_clip(&ytm, track, Some("song"))
+                .await
+                .expect("clip lookup");
+            println!("{track} → {found:?}");
+            assert_eq!(found.as_deref(), expected, "anonymous lookup for {track}");
+        }
+    }
+
     /// Writes real responses to %TEMP%\ytmusicdt-fixtures so the UI can be
     /// previewed in a browser with production-shaped data.
     #[tokio::test]
