@@ -1,8 +1,8 @@
 import { LocateFixed, Mic2 } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api, ApiFailure } from "../api";
-import type { Lyrics, LyricLine, LyricWord, MediaItem } from "../types";
-import { activeLineIndex, clockToSeconds, lineProgress, wordProgress, wordSpans } from "../ui/lyrics";
+import type { Lyrics, MediaItem } from "../types";
+import { activeLineIndex, clockToSeconds } from "../ui/lyrics";
 import { smallThumb } from "../ui/format";
 
 const SCROLL_MS = 620;
@@ -102,7 +102,6 @@ function TimedLyrics({
   const viewportRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLOListElement>(null);
   const lineRefs = useRef(new Map<number, HTMLLIElement>());
-  const wordRefs = useRef(new Map<string, HTMLSpanElement>());
   const clock = useRef({ value: progress, at: performance.now() });
   const scrollFrame = useRef(0);
   const [anchorIndex, setAnchorIndex] = useState(() => activeLineIndex(lines, progress * 1000));
@@ -161,16 +160,6 @@ function TimedLyrics({
         painted = index;
         setAnchorIndex(index);
         if (followingRef.current) glideTo(index, true);
-      }
-      const line = lines[index];
-      if (line) {
-        const lineElement = lineRefs.current.get(index);
-        lineElement?.style.setProperty("--karaoke", `${lineProgress(line, positionMs) * 100}%`);
-        const words = wordSpans(line);
-        for (let word = 0; word < words.length; word += 1) {
-          const element = wordRefs.current.get(`${index}:${word}`);
-          element?.style.setProperty("--karaoke", `${wordProgress(words[word], positionMs) * 100}%`);
-        }
       }
       frame = requestAnimationFrame(tick);
     };
@@ -287,17 +276,7 @@ function TimedLyrics({
                   glideTo(index, true);
                 }}
               >
-                <KaraokeText
-                  line={line}
-                  index={index}
-                  active={index === activeIndex}
-                  register={(word, element) => {
-                    const key = `${index}:${word}`;
-                    if (element) wordRefs.current.set(key, element);
-                    else wordRefs.current.delete(key);
-                  }}
-                  spans={wordSpans(line)}
-                />
+                <span className="fp-karaoke-text">{line.text}</span>
               </button>
             </li>
           ))}
@@ -308,39 +287,5 @@ function TimedLyrics({
         <span title={attribution}>{attribution}</span>
       </div>
     </section>
-  );
-}
-
-/** Words carry their own fill so the highlight follows the voice; a line
- * without word timings fills as a whole. */
-function KaraokeText({
-  line,
-  index,
-  active,
-  register,
-  spans,
-}: {
-  line: LyricLine;
-  index: number;
-  active: boolean;
-  register: (word: number, element: HTMLSpanElement | null) => void;
-  spans: LyricWord[];
-}) {
-  if (spans.length === 0) return <span className="fp-karaoke-text">{line.text}</span>;
-  return (
-    <span className="fp-karaoke-text">
-      {spans.map((word, position) => (
-        <span
-          // Words are positional: the same text can repeat inside a line.
-          key={`${index}-${position}`}
-          className="fp-karaoke-word"
-          data-active={active || undefined}
-          ref={(element) => register(position, element)}
-        >
-          {word.text}
-          {position < spans.length - 1 ? " " : null}
-        </span>
-      ))}
-    </span>
   );
 }

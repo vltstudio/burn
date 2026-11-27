@@ -72,17 +72,11 @@ describe("KaraokeLyrics", () => {
     expect(onSeek).toHaveBeenCalledExactlyOnceWith(9);
   });
 
-  it("splits every line into words, keeping the source's own timings", async () => {
+  it("shows each line whole: no word spans, no fill to wait for", async () => {
     await render(1.5);
+    expect(host.querySelectorAll(".fp-karaoke-word")).toHaveLength(0);
     const rows = host.querySelectorAll<HTMLElement>(".fp-karaoke-lines li");
-    const activeWords = rows[0].querySelectorAll(".fp-karaoke-word");
-    expect(activeWords).toHaveLength(2);
-    expect(activeWords[0].getAttribute("data-active")).toBe("true");
-
-    // A line without word timings is split by hand, so the fill still moves.
-    const plainWords = rows[1].querySelectorAll(".fp-karaoke-word");
-    expect(plainWords).toHaveLength(1);
-    expect(plainWords[0].textContent).toContain("three");
+    expect(rows[0].textContent).toContain("one two");
     expect(host.querySelector(".fp-karaoke-glow span")).not.toBeNull();
   });
 });
