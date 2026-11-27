@@ -643,14 +643,25 @@
 }
 
 .full-player .fp-karaoke-lines li {
-  transition: opacity 420ms ease, transform 460ms cubic-bezier(0.22, 1, 0.36, 1), filter 420ms ease;
-  transform: translateY(2px);
+  transition:
+    opacity 560ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 620ms cubic-bezier(0.22, 1, 0.36, 1),
+    filter 560ms cubic-bezier(0.22, 1, 0.36, 1);
+  transform: translateY(4px);
+  will-change: opacity, transform;
 }
 
 .full-player .fp-karaoke-lines li[data-state="active"] {
   opacity: 1;
   transform: none;
+  filter: none;
 }
+
+/* Distance reads as unfocus, the way a camera would: the next line blurs a
+   hair, the far ones sink into the background. */
+.full-player .fp-karaoke-lines li[data-distance="2"] { filter: blur(0.4px); }
+.full-player .fp-karaoke-lines li[data-distance="3"],
+.full-player .fp-karaoke-lines li[data-distance="4"] { filter: blur(0.9px); }
 
 .full-player .fp-karaoke-lines li[data-state="past"] {
   opacity: 0.4;
@@ -689,16 +700,18 @@
 
 /* The fill is a gradient clipped to the glyphs, so the highlight glides
    through a word instead of stepping at each frame. */
-/* The whole line that is playing is highlighted; the karaoke sweep on top of
-   it marks how far the voice has got. */
+/* The whole line that is playing is bright white; the part the voice has
+   already reached carries the accent, so the karaoke sweep stays visible
+   without dimming the line. */
 .full-player .fp-karaoke-word {
   --karaoke: 0%;
-  --karaoke-unsung: rgba(255, 255, 255, 0.7);
+  --karaoke-sung: rgb(var(--tint-rgb));
+  --karaoke-unsung: #fff;
   display: inline;
 }
 
 .full-player .fp-karaoke-word[data-active] {
-  background-image: linear-gradient(90deg, #fff var(--karaoke), var(--karaoke-unsung) var(--karaoke));
+  background-image: linear-gradient(90deg, var(--karaoke-sung) var(--karaoke), #fff var(--karaoke));
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
@@ -707,7 +720,7 @@
 .full-player .fp-karaoke-lines li[data-state="active"]
   .fp-karaoke-line:not(:has(.fp-karaoke-word))
   .fp-karaoke-text {
-  background-image: linear-gradient(90deg, #fff var(--karaoke), var(--karaoke-unsung) var(--karaoke));
+  background-image: linear-gradient(90deg, var(--karaoke-sung) var(--karaoke), #fff var(--karaoke));
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;

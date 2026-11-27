@@ -5,7 +5,7 @@ import type { Lyrics, LyricLine, LyricWord, MediaItem } from "../types";
 import { activeLineIndex, clockToSeconds, lineProgress, wordProgress, wordSpans } from "../ui/lyrics";
 import { smallThumb } from "../ui/format";
 
-const SCROLL_MS = 520;
+const SCROLL_MS = 620;
 
 export function KaraokeLyrics({
   current,
@@ -141,7 +141,7 @@ function TimedLyrics({
     const start = performance.now();
     const step = (now: number) => {
       const t = Math.min(1, (now - start) / SCROLL_MS);
-      const eased = 1 - Math.pow(1 - t, 3);
+      const eased = 1 - Math.pow(1 - t, 5);
       viewport.scrollTop = from + (target - from) * eased;
       if (t < 1) scrollFrame.current = requestAnimationFrame(step);
     };
