@@ -27,6 +27,7 @@ export default function QuickPlayer() {
   const [search, setSearch] = useState<{ key: string; items: MediaItem[]; error?: boolean } | null>(null);
   const [notice, setNotice] = useState("");
   const [seek, setSeek] = useState<number | null>(null);
+  const dragging = useRef(false);
   const input = useRef<HTMLInputElement>(null);
   const searchButton = useRef<HTMLButtonElement>(null);
   const timer = useRef<number | undefined>(undefined);
@@ -125,6 +126,20 @@ export default function QuickPlayer() {
   }, [expanded, searchKey, source, term]);
 
   const send = (request: QuickRequest) => void quickRequest(request).catch(() => setNotice("Нет связи с плеером."));
+  // The pressed position outlives the gesture: the main player answers one
+  // round trip later, and dropping it on release snapped the thumb back to the
+  // old position and forward again.
+  useEffect(() => {
+    if (seek === null || dragging.current) return;
+    if (Math.abs(state.progress - seek) < 1) setSeek(null);
+  }, [seek, state.progress]);
+
+  useEffect(() => {
+    if (seek === null) return;
+    const timeout = window.setTimeout(() => setSeek(null), 1600);
+    return () => window.clearTimeout(timeout);
+  }, [seek]);
+
   const current = state.current;
   const activeSearch = search?.key === searchKey ? search : null;
   const progress = Math.max(0, Math.min(state.duration, seek ?? state.progress));
@@ -183,19 +198,20 @@ export default function QuickPlayer() {
             disabled={!state.duration}
             onChange={(event) => {
               const value = Number(event.currentTarget.value);
-              if (seek === null) send({ action: "seek", value });
-              else setSeek(value);
+              setSeek(value);
+              send({ action: "seek", value });
             }}
             onPointerDown={(event) => {
               if (!state.duration) return;
+              dragging.current = true;
               event.currentTarget.setPointerCapture?.(event.pointerId);
-              setSeek(progress);
             }}
             onPointerUp={(event) => {
+              dragging.current = false;
               if (state.duration) send({ action: "seek", value: Number(event.currentTarget.value) });
-              setSeek(null);
             }}
-            onPointerCancel={() => setSeek(null)}
+            onPointerCancel={() => { dragging.current = false; }}
+            onLostPointerCapture={() => { dragging.current = false; }}
           />
           <span>{formatTime(state.duration)}</span>
         </div>
