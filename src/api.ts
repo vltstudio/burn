@@ -10,6 +10,7 @@ import type {
   Detail,
   DiscordActivity,
   DiscordPreferences,
+  DownloadsSnapshot,
   DiscordPresenceView,
   Favorite,
   FavoritesSyncReport,
@@ -135,6 +136,7 @@ export const api = {
     call<DiscordPreferences>("discord_presence_configure", { preferences }),
   discordPresenceSync: (activity: DiscordActivity | null) => call<void>("discord_presence_sync", { activity }),
   streamUrl: (videoId: string, refresh = false) => call<string>("stream_url", { videoId, refresh }),
+  downloads: () => call<DownloadsSnapshot>("downloads_state"),
   openUrl: (url: string) => openUrl(url),
 };
 
@@ -151,6 +153,11 @@ export function archiveCoverUrl(version: number): string {
 /** Local files are streamed by the backend's own protocol handler. */
 export function localMediaUrl(path: string): string {
   return `${localMediaBase()}/${encodeURIComponent(path)}`;
+}
+
+/** The cover cached next to a downloaded favourite. */
+export function downloadCoverUrl(videoId: string): string {
+  return `${localMediaBase()}/download-cover/${encodeURIComponent(videoId)}`;
 }
 
 export function localCoverUrl(id: string): string {

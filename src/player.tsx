@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { api, ApiFailure, localMediaUrl } from "./api";
+import { downloadedPath } from "./downloads";
 import type { MediaItem } from "./types";
 
 export type RepeatMode = "off" | "all" | "one";
@@ -243,8 +244,11 @@ export function PlayerProvider({ children, onToast }: Props) {
       setLoading(true);
       setProgress(0);
       setDuration(0);
+      // A favourited track keeps its own copy: that one plays with no network
+      // and needs no stream lookup, which would fail offline.
+      const offlinePath = item.localPath ?? downloadedPath(item.videoId);
       try {
-        const url = item.localPath ? localMediaUrl(item.localPath) : await api.streamUrl(item.videoId!);
+        const url = offlinePath ? localMediaUrl(offlinePath) : await api.streamUrl(item.videoId!);
         if (requestRef.current !== token) return;
         audio.src = url;
         audio.currentTime = 0;
@@ -253,10 +257,12 @@ export function PlayerProvider({ children, onToast }: Props) {
         } catch (error) {
           if (requestRef.current !== token) return;
           if (!playRequestedRef.current) return;
-          if (item.localPath || !(error instanceof DOMException) || error.name !== "NotSupportedError") {
+          // A downloaded copy that the decoder rejects falls back to the
+          // stream; a real local file has no stream to fall back to.
+          if (item.localPath || !item.videoId || !(error instanceof DOMException) || error.name !== "NotSupportedError") {
             throw error;
           }
-          const refreshed = await api.streamUrl(item.videoId!, true);
+          const refreshed = await api.streamUrl(item.videoId, true);
           if (requestRef.current !== token) return;
           audio.src = refreshed;
           if (playRequestedRef.current) await audio.play();

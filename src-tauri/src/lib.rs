@@ -3,6 +3,7 @@ mod config;
 #[cfg(desktop)]
 mod discord;
 mod favorites_sync;
+mod downloads;
 mod error;
 mod import;
 mod local;
@@ -26,6 +27,7 @@ use config::{ConfigStore, Settings};
 #[cfg(desktop)]
 use config::DiscordPreferences;
 use favorites_sync::{FavoritesSync, SyncReport};
+use downloads::{Download, Downloads};
 use error::{Error, Result};
 use import::{ImportProgress, ImportReport, ImportRequest};
 use local::{ArchivedPlaylist, Favorite, LocalAddRootResult, LocalLibrary, LocalStatus, LocalTrackPage};
@@ -46,6 +48,7 @@ pub struct AppState {
     settings: ConfigStore,
     signin: Mutex<SignIn>,
     local: Arc<LocalLibrary>,
+    downloads: Arc<Downloads>,
     lyrics: Mutex<HashMap<String, Lyrics>>,
     favorites_sync: FavoritesSync,
     #[cfg(desktop)]
@@ -839,19 +842,53 @@ async fn favorites_sync_playlist(state: tauri::State<'_, Arc<AppState>>) -> Resu
 }
 
 #[tauri::command]
-async fn favorites_sync(state: tauri::State<'_, Arc<AppState>>) -> Result<SyncReport> {
+async fn favorites_sync(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<SyncReport> {
     let handle = state.signin.lock().await.account.as_ref()
         .and_then(|account| account.handle.clone())
         .ok_or_else(|| Error::Auth("Подтвердите вход в Google перед синхронизацией любимых треков".into()))?;
-    state.favorites_sync.sync(&state.ytm, &state.local, &handle).await
+    let report = state.favorites_sync.sync(&state.ytm, &state.local, &handle).await?;
+    queue_favorite_downloads(app, state.inner().clone());
+    Ok(report)
 }
 
 #[tauri::command]
 async fn favorite_toggle(
+    app: tauri::AppHandle,
     state: tauri::State<'_, Arc<AppState>>,
     favorite: Favorite,
 ) -> Result<bool> {
-    state.local.toggle_favorite(favorite)
+    let video_id = favorite.video_id.clone();
+    let added = state.local.toggle_favorite(favorite.clone())?;
+    match (added, video_id) {
+        (true, _) => queue_download(app, state.inner().clone(), favorite),
+        (false, Some(video_id)) => {
+            state.downloads.remove(&video_id)?;
+        }
+        (false, None) => {}
+    }
+    Ok(added)
+}
+
+/// What the app keeps on disk for offline listening.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DownloadsState {
+    items: Vec<Download>,
+    count: usize,
+    bytes: u64,
+}
+
+#[tauri::command]
+async fn downloads_state(state: tauri::State<'_, Arc<AppState>>) -> Result<DownloadsState> {
+    let (count, bytes) = state.downloads.usage();
+    Ok(DownloadsState {
+        items: state.downloads.list(),
+        count,
+        bytes,
+    })
 }
 
 #[tauri::command]
@@ -997,6 +1034,8 @@ pub fn run() {
                 config_dir.join("covers"),
             ));
             let local_for_state = local.clone();
+            let downloads = Arc::new(Downloads::load(config_dir.join("downloads")));
+            downloads.sweep();
 
             let state = Arc::new(AppState {
                 ytm,
@@ -1005,12 +1044,14 @@ pub fn run() {
                 settings,
                 signin: Mutex::new(SignIn::default()),
                 local: local_for_state,
+                downloads: downloads.clone(),
                 lyrics: Mutex::new(HashMap::new()),
                 favorites_sync: FavoritesSync::new(config_dir.join("favorites-sync.json")),
                 #[cfg(desktop)]
                 discord: discord::Presence::new(app.handle().clone()),
             });
 
+            queue_favorite_downloads(app.handle().clone(), state.clone());
             let loaded = state.settings.language();
             tauri::async_runtime::block_on(async {
                 state.ytm.set_language(&loaded).await;
@@ -1088,10 +1129,163 @@ pub fn run() {
             #[cfg(desktop)]
             discord_presence_sync,
             stream_url,
+            downloads_state,
             quick_player::quick_window,
         ])
         .run(tauri::generate_context!())
         .expect("error while running BURN");
+}
+
+// ------------------------------------------------------------ offline copies
+
+/// Emitted while a favourite is fetched, so the list can show how far it got.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DownloadProgress {
+    video_id: String,
+    /// `downloading`, `done` or `error`.
+    state: &'static str,
+    received: u64,
+    total: Option<u64>,
+    message: Option<String>,
+}
+
+fn emit_download(app: &tauri::AppHandle, progress: DownloadProgress) {
+    use tauri::Emitter;
+    let _ = app.emit("downloads:progress", progress.clone());
+    if progress.state != "downloading" {
+        let _ = app.emit("downloads:changed", ());
+    }
+}
+
+/// Hearts are the download queue: a favourite is kept on disk so the favourites
+/// tab plays without a connection.
+fn queue_download(app: tauri::AppHandle, state: Arc<AppState>, favorite: Favorite) {
+    if favorite.source != "yt" {
+        return;
+    }
+    let Some(video_id) = favorite.video_id.clone().filter(|id| !id.is_empty()) else {
+        return;
+    };
+    if state.downloads.find(&video_id).is_some() || !state.downloads.claim(&video_id) {
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        download_favorite(&app, &state, favorite, video_id).await;
+    });
+}
+
+/// Favourites saved before this feature, or synced from another device, get
+/// their copy on the next launch and after every sync. They go one at a time so
+/// a large library does not open a hundred connections at once.
+fn queue_favorite_downloads(app: tauri::AppHandle, state: Arc<AppState>) {
+    tauri::async_runtime::spawn(async move {
+        for favorite in state.local.favorites() {
+            let Some(video_id) = favorite.video_id.clone().filter(|id| !id.is_empty()) else {
+                continue;
+            };
+            if favorite.source != "yt"
+                || state.downloads.find(&video_id).is_some()
+                || !state.downloads.claim(&video_id)
+            {
+                continue;
+            }
+            download_favorite(&app, &state, favorite, video_id).await;
+        }
+    });
+}
+
+/// One favourite from stream to index: resolves a source, retries with a fresh
+/// one if the service refuses it, then records the file and its cover.
+async fn download_favorite(
+    app: &tauri::AppHandle,
+    state: &Arc<AppState>,
+    favorite: Favorite,
+    video_id: String,
+) {
+    let result = keep_favorite_audio(app, state, &favorite, &video_id).await;
+    state.downloads.release(&video_id);
+    match result {
+        Ok(download) => emit_download(
+            app,
+            DownloadProgress {
+                video_id,
+                state: "done",
+                received: download.bytes,
+                total: Some(download.bytes),
+                message: None,
+            },
+        ),
+        Err(error) => emit_download(
+            app,
+            DownloadProgress {
+                video_id,
+                state: "error",
+                received: 0,
+                total: None,
+                message: Some(error.to_string()),
+            },
+        ),
+    }
+}
+
+async fn keep_favorite_audio(
+    app: &tauri::AppHandle,
+    state: &Arc<AppState>,
+    favorite: &Favorite,
+    video_id: &str,
+) -> Result<Download> {
+    let report = |received: u64, total: Option<u64>| {
+        emit_download(
+            app,
+            DownloadProgress {
+                video_id: video_id.to_string(),
+                state: "downloading",
+                received,
+                total,
+                message: None,
+            },
+        );
+    };
+    let url = download_source(state, video_id).await?;
+    let (path, bytes) = match state.downloads.fetch(video_id, url.as_str(), &report).await {
+        Ok(done) => done,
+        Err(first) => {
+            // A stream URL expires, and a service can refuse one client: ask
+            // for a fresh source once before giving up.
+            state.audio.invalidate(video_id).await;
+            let fallback = download_source(state, video_id).await?;
+            state
+                .downloads
+                .fetch(video_id, fallback.as_str(), &report)
+                .await
+                .map_err(|second| Error::player(format!("{second} (первая попытка: {first})")))?
+        }
+    };
+    if let Some(thumb) = favorite.thumb.clone() {
+        state.downloads.fetch_cover(video_id, &thumb).await;
+    }
+    let record = Download {
+        video_id: video_id.to_string(),
+        title: favorite.title.clone(),
+        subtitle: favorite.subtitle.clone(),
+        duration: favorite.duration,
+        thumb: favorite.thumb.clone(),
+        path: path.to_string_lossy().to_string(),
+        bytes,
+        has_cover: false,
+    };
+    state.downloads.commit(record.clone())?;
+    Ok(record)
+}
+
+async fn download_source(state: &Arc<AppState>, video_id: &str) -> Result<String> {
+    state
+        .audio
+        .resolve(video_id)
+        .await
+        .map(String::from)
+        .map_err(|error| Error::player(error.to_string()))
 }
 
 // ------------------------------------------------------- local media protocol
@@ -1149,7 +1343,24 @@ fn serve_local_media(
 
     let path = percent_decode(raw);
 
-    if !state.local.allows(&path) {
+    if let Some(encoded) = raw.strip_prefix("download-cover/") {
+        let id = percent_decode(encoded);
+        return match state.downloads.cover(&id) {
+            Some(bytes) => tauri::http::Response::builder()
+                .status(200)
+                .header("Content-Type", sniff_image(&bytes))
+                .header("Cache-Control", "max-age=3600")
+                .header("Access-Control-Allow-Origin", "*")
+                .body(Cow::Owned(bytes))
+                .unwrap_or_else(|_| tauri::http::Response::new(Cow::Borrowed(&b""[..]))),
+            None => tauri::http::Response::builder()
+                .status(404)
+                .body(Cow::Borrowed(&b"no cover"[..]))
+                .unwrap_or_else(|_| tauri::http::Response::new(Cow::Borrowed(&b""[..]))),
+        };
+    }
+
+    if !state.local.allows(&path) && !state.downloads.allows(&path) {
         return tauri::http::Response::builder()
             .status(403)
             .body(Cow::Borrowed(&b"forbidden"[..]))

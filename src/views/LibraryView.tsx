@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { api, ApiFailure } from "../api";
+import { api, ApiFailure, downloadCoverUrl } from "../api";
 import { Archive, ArchiveRestore, ExternalLink, ImagePlus, ListMusic, RefreshCw } from "lucide-react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { Shelf } from "../components/Shelf";
+import { hasDownloadedCover } from "../downloads";
+import { useDownloads } from "../downloads-provider";
 import { useLibrary } from "../library";
 import { LiquidWaveSpinner } from "../components/ui/liquid-spinner";
 import { SpotifyImportDialog } from "../components/SpotifyImportDialog";
@@ -62,6 +64,7 @@ export function LibraryView({
   onOpenLocalSettings,
 }: Props) {
   const player = usePlayback();
+  const downloads = useDownloads();
   const {
     archivedItems,
     archivedIds,
@@ -232,7 +235,14 @@ export function LibraryView({
     }
 
     if (tab === "favorites") {
-      const items = favorites.map(favoriteToItem);
+      // A downloaded favourite carries its cover on disk, so the list still
+      // renders when there is no network.
+      const items = favorites.map((favorite) => {
+        const item = favoriteToItem(favorite);
+        return hasDownloadedCover(item.videoId)
+          ? { ...item, thumbs: [downloadCoverUrl(item.videoId!)] }
+          : item;
+      });
       const remoteId = favoriteSync.playlistId?.replace(/^VL/, "");
       return (
         <>
@@ -269,7 +279,7 @@ export function LibraryView({
                 <button className="link favorites-sync-button" onClick={onRequestSignIn}>Войти для синхронизации</button>
               </>
             )}
-            <span className="favorites-source">Локальные файлы — только на устройстве</span>
+            <span className="favorites-source" role="status">{downloads.line}</span>
           </div>
           {items.length === 0 ? (
             <div className="empty">

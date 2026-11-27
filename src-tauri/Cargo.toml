@@ -29,7 +29,7 @@ reqwest = { version = "0.12", default-features = false, features = [
     "gzip",
     "json",
 ] }
-tokio = { version = "1", features = ["io-util", "macros", "net", "time", "sync"] }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "time", "sync"] }
 chrono = { version = "0.4", features = ["clock"] }
 sha1 = "0.10"
 lofty = "0.22.2"

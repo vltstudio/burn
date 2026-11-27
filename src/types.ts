@@ -238,3 +238,31 @@ export interface ArchiveState {
   archived: ArchivedPlaylist[];
   hasCover: boolean;
 }
+
+/** A favourite's audio kept on disk for offline listening. */
+export interface DownloadedTrack {
+  videoId: string;
+  title: string;
+  subtitle: string;
+  duration: number | null;
+  thumb: string | null;
+  path: string;
+  bytes: number;
+  /** The artwork was cached next to the audio. */
+  hasCover: boolean;
+}
+
+export interface DownloadsSnapshot {
+  items: DownloadedTrack[];
+  count: number;
+  bytes: number;
+}
+
+/** One download as it happens; the favourites line shows its percentage. */
+export interface DownloadProgress {
+  videoId: string;
+  state: "downloading" | "done" | "error";
+  received: number;
+  total: number | null;
+  message: string | null;
+}
