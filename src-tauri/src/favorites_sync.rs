@@ -10,7 +10,7 @@ use crate::ytm::{api, parse, Ytm};
 
 const TITLE: &str = "Любимые треки";
 const MARKER: &str = "[YtMusicDT:favorites:v1]";
-const DESCRIPTION: &str = "Любимые треки из приложения VLT Music.\n[YtMusicDT:favorites:v1]";
+const DESCRIPTION: &str = "Любимые треки из приложения BURN.\n[YtMusicDT:favorites:v1]";
 const CHUNK: usize = 25;
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -417,7 +417,7 @@ async fn discover(ytm: &Ytm) -> Result<Option<RemotePlaylist>> {
             .await?;
         if is_owned(&response) {
             if marked.is_some() {
-                return Err(Error::api("Найдено несколько плейлистов избранного VLT Music. Выберите один, прежде чем продолжить синхронизацию."));
+                return Err(Error::api("Найдено несколько плейлистов избранного BURN. Выберите один, прежде чем продолжить синхронизацию."));
             }
             marked = Some(read_playlist_from(ytm, &id, response).await?);
         }

@@ -88,7 +88,7 @@ afterEach(async () => {
   vi.unstubAllEnvs();
 });
 
-describe("VLT Music updater", () => {
+describe("BURN updater", () => {
   it.each([
     { name: "browser", native: false, production: true, path: "/" },
     { name: "development", native: true, production: false, path: "/" },

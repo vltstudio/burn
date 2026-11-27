@@ -999,7 +999,7 @@ pub fn run() {
             stream_url,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running VLT Music");
+        .expect("error while running BURN");
 }
 
 // ------------------------------------------------------- local media protocol

@@ -66,7 +66,7 @@ export function LikedPlaylistHeader({ variant, items, hasMore = false }: { varia
       <div className="liked-playlist-info">
         <div className="hero-kind">{variant === "app" ? "Сердечки в приложении" : variant === "spotify" ? "Импорт из Spotify" : "Лайки YouTube Music"}</div>
         <h2 className="liked-playlist-title">{variant === "app" ? "Избранные" : variant === "spotify" ? "Любимые треки Spotify" : "Любимые треки YouTube"}</h2>
-        <div className="liked-playlist-meta">{variant === "app" ? "VLT Music" : "YouTube Music"}<span>·</span>Треков: {items.length}{hasMore ? "+" : ""}</div>
+        <div className="liked-playlist-meta">{variant === "app" ? "BURN" : "YouTube Music"}<span>·</span>Треков: {items.length}{hasMore ? "+" : ""}</div>
         <div className="hero-actions">
           <button className="solid-button" disabled={playable.length === 0} onClick={() => player.playItems(playable, 0)}>
             <Play size={13} fill="currentColor" /> Слушать

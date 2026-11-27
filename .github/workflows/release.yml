@@ -22,7 +22,7 @@ env:
 
 jobs:
   prepare:
-    if: github.repository == 'vltstudio/vltmusic'
+    if: github.repository == 'vltstudio/burn'
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     permissions:
@@ -118,7 +118,7 @@ jobs:
           args: --ci --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} -- --locked
           uploadUpdaterJson: false
           uploadUpdaterSignatures: true
-          releaseAssetNamePattern: vltmusic_[version]_${{ matrix.platform }}[ext]
+          releaseAssetNamePattern: burn_[version]_${{ matrix.platform }}[ext]
 
   publish:
     needs: [prepare, build]

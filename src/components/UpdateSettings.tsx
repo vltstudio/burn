@@ -6,14 +6,14 @@ import { SettingSection } from "./SettingSection";
 function statusText(state: UpdaterState): string {
   switch (state.phase) {
     case "checking": return "Проверяем обновления…";
-    case "current": return "Установлена актуальная версия VLT Music.";
-    case "available": return `Доступна VLT Music ${state.info?.version ?? ""}`;
-    case "downloading": return "Загружаем обновление VLT Music…";
+    case "current": return "Установлена актуальная версия BURN.";
+    case "available": return `Доступна BURN ${state.info?.version ?? ""}`;
+    case "downloading": return "Загружаем обновление BURN…";
     case "installing": return "Устанавливаем подписанное обновление…";
-    case "installed": return "Обновление установлено. Перезапустите VLT Music.";
-    case "restarting": return "Перезапускаем VLT Music…";
+    case "installed": return "Обновление установлено. Перезапустите BURN.";
+    case "restarting": return "Перезапускаем BURN…";
     case "error": return "Не удалось завершить проверку или обновление.";
-    default: return "VLT Music проверяет обновления при запуске.";
+    default: return "BURN проверяет обновления при запуске.";
   }
 }
 
@@ -31,9 +31,9 @@ export function UpdateSettings() {
   const confirmingRestart = confirmation === "restart" && state.phase === "installed";
 
   return (
-    <SettingSection title="Обновления VLT Music">
+    <SettingSection title="Обновления BURN">
       {!supported ? (
-        <p className="field-hint">Обновления доступны только в установленной версии VLT Music. В превью и режиме разработки проверка отключена.</p>
+        <p className="field-hint">Обновления доступны только в установленной версии BURN. В превью и режиме разработки проверка отключена.</p>
       ) : (
         <div className="updater-status" role="status">{statusText(state)}</div>
       )}
@@ -56,8 +56,8 @@ export function UpdateSettings() {
       {confirmingInstall || confirmingRestart ? (
         <div className="updater-confirm" role="group" aria-label={confirmingInstall ? "Подтверждение установки обновления" : "Подтверждение перезапуска"}>
           <p>{confirmingInstall
-            ? `Загрузить и установить VLT Music ${state.info?.version}? На Windows приложение закроется для установки и запустится снова. Воспроизведение прервётся.`
-            : "Перезапустить VLT Music сейчас? Воспроизведение прервётся."}</p>
+            ? `Загрузить и установить BURN ${state.info?.version}? На Windows приложение закроется для установки и запустится снова. Воспроизведение прервётся.`
+            : "Перезапустить BURN сейчас? Воспроизведение прервётся."}</p>
           <div className="actions-row">
             <button className="ghost-button" onClick={() => setConfirmation(null)} autoFocus>Отмена</button>
             <button className="solid-button" onClick={() => {

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 
-const repository = 'vltstudio/vltmusic';
+const repository = 'vltstudio/burn';
 const platforms = [
   { key: 'windows-x86_64', payload: '.exe', installer: 'nsis', extras: [] },
   { key: 'darwin-aarch64', payload: '.app.tar.gz', installer: 'app', extras: ['.dmg'] },
@@ -138,8 +138,8 @@ async function prepare() {
   }
   if (!release) {
     release = await request('/releases', { method: 'POST', body: {
-      tag_name: tag, target_commitish: sha, name: `VLT Music ${version}`,
-      body: 'Desktop installers and signed automatic-update payloads for VLT Music.',
+      tag_name: tag, target_commitish: sha, name: `BURN ${version}`,
+      body: 'Desktop installers and signed automatic-update payloads for BURN.',
       draft: true, prerelease: false,
     } });
   }
@@ -149,7 +149,7 @@ async function prepare() {
 
 function expectedAssets(version) {
   return platforms.flatMap((platform) => {
-    const prefix = `vltmusic_${version}_${platform.key}`;
+    const prefix = `burn_${version}_${platform.key}`;
     return [platform.payload, `${platform.payload}.sig`, ...platform.extras].map((extension) => prefix + extension);
   });
 }
@@ -174,7 +174,7 @@ function manifest(version, tag, assets, signatures, notes = '') {
   const found = validateAssets(version, assets);
   const entries = {};
   for (const platform of platforms) {
-    const name = `vltmusic_${version}_${platform.key}${platform.payload}`;
+    const name = `burn_${version}_${platform.key}${platform.payload}`;
     const signatureName = `${name}.sig`;
     const signature = signatures.get(signatureName)?.trim();
     if (!signature || signature.length > 16_384 || found.get(signatureName).size > 16_384) {
@@ -202,7 +202,7 @@ async function publish() {
   const found = validateAssets(version, assets);
   const signatures = new Map();
   for (const platform of platforms) {
-    const name = `vltmusic_${version}_${platform.key}${platform.payload}.sig`;
+    const name = `burn_${version}_${platform.key}${platform.payload}.sig`;
     if (found.get(name).size > 16_384) throw new Error('Updater signature is unexpectedly large');
     signatures.set(name, await request(`/releases/assets/${found.get(name).id}`, { binary: true }));
   }

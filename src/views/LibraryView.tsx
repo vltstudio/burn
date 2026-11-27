@@ -255,7 +255,7 @@ export function LibraryView({
                 </button>
                 {remoteId ? (
                   <button className="link favorites-cloud-link" title="Открыть облачную копию избранного" aria-label="Открыть облачную копию избранного" onClick={() => onOpen({
-                    kind: "playlist", title: "Любимые треки", subtitle: "VLT Music", videoId: null,
+                    kind: "playlist", title: "Любимые треки", subtitle: "BURN", videoId: null,
                     browseId: `VL${remoteId}`, playlistId: remoteId, duration: null, year: null,
                     thumbs: [], artists: [], album: null,
                   })}>

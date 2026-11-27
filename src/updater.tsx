@@ -154,18 +154,18 @@ export function useAppUpdater(): AppUpdater {
       if (!active.current || operation.current?.id !== id) return;
       operation.current.timedOut = true;
       timer.current = null;
-      setState((current) => ({ ...current, phase: "error", error: "Перезапуск не ответил вовремя. Закройте и откройте VLT Music вручную.", busy: true }));
+      setState((current) => ({ ...current, phase: "error", error: "Перезапуск не ответил вовремя. Закройте и откройте BURN вручную.", busy: true }));
     }, 20_000);
     timer.current = deadline;
     try {
       await relaunch();
       if (!active.current || operation.current?.id !== id) return;
       operation.current = null;
-      setState((current) => ({ ...current, phase: "installed", error: "Запрос на перезапуск отправлен. Если окно осталось открытым, перезапустите VLT Music вручную.", busy: false }));
+      setState((current) => ({ ...current, phase: "installed", error: "Запрос на перезапуск отправлен. Если окно осталось открытым, перезапустите BURN вручную.", busy: false }));
     } catch {
       if (!active.current || operation.current?.id !== id) return;
       operation.current = null;
-      setState((current) => ({ ...current, phase: "installed", error: "Не удалось перезапустить VLT Music. Закройте и откройте приложение вручную.", busy: false }));
+      setState((current) => ({ ...current, phase: "installed", error: "Не удалось перезапустить BURN. Закройте и откройте приложение вручную.", busy: false }));
     } finally {
       if (timer.current === deadline) clearTimer();
     }

@@ -335,7 +335,7 @@ export function SettingsDialog({ open, initialTab, auth, onClose, onAuthChanged,
       <div className="dialog-head">
         <div>
           <h2 className="dialog-title" id="settings-title">Настройки</h2>
-          {version ? <span className="settings-build">VLT Music {version}</span> : null}
+          {version ? <span className="settings-build">BURN {version}</span> : null}
         </div>
         <button className="icon-button settings-close" onClick={close} aria-label="Закрыть настройки" title="Закрыть" autoFocus>
           <X size={19} />
