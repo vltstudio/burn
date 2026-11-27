@@ -108,6 +108,7 @@ function TimedLyrics({
   const [padding, setPadding] = useState(0);
   const [following, setFollowing] = useState(true);
   const followingRef = useRef(true);
+  const manualAt = useRef(0);
   const anchor = lines[anchorIndex];
   const activeIndex = anchor ? anchorIndex : -1;
 
@@ -156,6 +157,9 @@ function TimedLyrics({
       const position = playing ? clock.current.value + (now - clock.current.at) / 1000 : clock.current.value;
       const positionMs = position * 1000;
       const index = activeLineIndex(lines, positionMs);
+      if (!followingRef.current && performance.now() - manualAt.current > 6000) {
+        setFollowing(true);
+      }
       if (index !== painted) {
         painted = index;
         setAnchorIndex(index);
@@ -189,8 +193,11 @@ function TimedLyrics({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // A stray wheel notch should not park the text off-centre for the rest of
+  // the track: following picks itself up again after a short pause.
   const stopFollowing = () => {
     cancelAnimationFrame(scrollFrame.current);
+    manualAt.current = performance.now();
     setFollowing(false);
   };
 
