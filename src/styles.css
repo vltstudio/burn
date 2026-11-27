@@ -1516,10 +1516,15 @@ select {
 .slider {
   position: relative;
   flex: 1;
-  height: 12px;
+  height: 16px;
   display: flex;
   align-items: center;
   cursor: pointer;
+  /* The whole band is a seek target: the press must not turn into a scroll,
+     a text selection, or a cancelled pointer. */
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .slider-track {
