@@ -689,14 +689,16 @@
 
 /* The fill is a gradient clipped to the glyphs, so the highlight glides
    through a word instead of stepping at each frame. */
+/* The whole line that is playing is highlighted; the karaoke sweep on top of
+   it marks how far the voice has got. */
 .full-player .fp-karaoke-word {
   --karaoke: 0%;
-  --karaoke-dim: rgba(255, 255, 255, 0.32);
+  --karaoke-unsung: rgba(255, 255, 255, 0.7);
   display: inline;
 }
 
 .full-player .fp-karaoke-word[data-active] {
-  background-image: linear-gradient(90deg, #fff var(--karaoke), var(--karaoke-dim) var(--karaoke));
+  background-image: linear-gradient(90deg, #fff var(--karaoke), var(--karaoke-unsung) var(--karaoke));
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
@@ -705,7 +707,7 @@
 .full-player .fp-karaoke-lines li[data-state="active"]
   .fp-karaoke-line:not(:has(.fp-karaoke-word))
   .fp-karaoke-text {
-  background-image: linear-gradient(90deg, #fff var(--karaoke), var(--karaoke-dim) var(--karaoke));
+  background-image: linear-gradient(90deg, #fff var(--karaoke), var(--karaoke-unsung) var(--karaoke));
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
