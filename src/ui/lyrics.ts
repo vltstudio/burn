@@ -46,3 +46,27 @@ function spanProgress(startMs: number, endMs: number, positionMs: number): numbe
   if (endMs <= startMs) return 1;
   return Math.min(1, (positionMs - startMs) / (endMs - startMs));
 }
+
+/**
+ * Words to fill for a line. A source with word timings hands them over as they
+ * are; a line that only has line timings is split by hand, weighting each word
+ * by its length, so the highlight still moves with the voice instead of
+ * sweeping the whole line at once.
+ */
+export function wordSpans(line: LyricLine): LyricWord[] {
+  if (line.words?.length) return line.words;
+  const words = line.text.split(/\s+/).filter(Boolean);
+  if (words.length === 0) return [];
+  const end = line.endMs ?? line.startMs + Math.max(1_200, words.length * 320);
+  const total = Math.max(1, end - line.startMs);
+  const weights = words.map((word) => Math.max(1, word.replace(/[^\p{L}\p{N}]/gu, "").length));
+  const weight = weights.reduce((sum, value) => sum + value, 0);
+  let cursor = line.startMs;
+  return words.map((word, index) => {
+    const share = Math.max(120, Math.round((total * weights[index]) / weight));
+    const start = cursor;
+    const finish = index === words.length - 1 ? Math.max(cursor + share, end) : Math.min(end, cursor + share);
+    cursor = finish;
+    return { text: word, startMs: start, endMs: Math.max(finish, start + 1) };
+  });
+}

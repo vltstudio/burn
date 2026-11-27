@@ -1,8 +1,8 @@
 import { LocateFixed, Mic2 } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api, ApiFailure } from "../api";
-import type { Lyrics, LyricLine, MediaItem } from "../types";
-import { activeLineIndex, clockToSeconds, lineProgress, wordProgress } from "../ui/lyrics";
+import type { Lyrics, LyricLine, LyricWord, MediaItem } from "../types";
+import { activeLineIndex, clockToSeconds, lineProgress, wordProgress, wordSpans } from "../ui/lyrics";
 import { smallThumb } from "../ui/format";
 
 const SCROLL_MS = 520;
@@ -106,6 +106,7 @@ function TimedLyrics({
   const clock = useRef({ value: progress, at: performance.now() });
   const scrollFrame = useRef(0);
   const [anchorIndex, setAnchorIndex] = useState(() => activeLineIndex(lines, progress * 1000));
+  const [padding, setPadding] = useState(0);
   const [following, setFollowing] = useState(true);
   const followingRef = useRef(true);
   const anchor = lines[anchorIndex];
@@ -165,11 +166,10 @@ function TimedLyrics({
       if (line) {
         const lineElement = lineRefs.current.get(index);
         lineElement?.style.setProperty("--karaoke", `${lineProgress(line, positionMs) * 100}%`);
-        if (line.words?.length) {
-          for (let word = 0; word < line.words.length; word += 1) {
-            const element = wordRefs.current.get(`${index}:${word}`);
-            element?.style.setProperty("--karaoke", `${wordProgress(line.words[word], positionMs) * 100}%`);
-          }
+        const words = wordSpans(line);
+        for (let word = 0; word < words.length; word += 1) {
+          const element = wordRefs.current.get(`${index}:${word}`);
+          element?.style.setProperty("--karaoke", `${wordProgress(words[word], positionMs) * 100}%`);
         }
       }
       frame = requestAnimationFrame(tick);
@@ -179,6 +179,20 @@ function TimedLyrics({
   }, [lines, playing, glideTo]);
 
   useEffect(() => () => cancelAnimationFrame(scrollFrame.current), []);
+
+  // Half the pane, so the top and bottom lines can sit in the middle as well.
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const measure = () => setPadding(Math.round(viewport.clientHeight / 2));
+    measure();
+    const observer = new ResizeObserver(() => {
+      measure();
+      if (followingRef.current) glideTo(activeLineIndex(lines, clock.current.value * 1000), false);
+    });
+    observer.observe(viewport);
+    return () => observer.disconnect();
+  }, [glideTo, lines]);
 
   useLayoutEffect(() => {
     if (following) glideTo(activeLineIndex(lines, clock.current.value * 1000), false);
@@ -245,7 +259,11 @@ function TimedLyrics({
             ?.querySelector<HTMLButtonElement>("button")?.focus();
         }}
       >
-        <ol className="fp-karaoke-lines" ref={listRef}>
+        <ol
+          className="fp-karaoke-lines"
+          ref={listRef}
+          style={{ paddingTop: padding, paddingBottom: padding }}
+        >
           {lines.map((line, index) => (
             <li
               key={`${line.startMs}-${index}`}
@@ -278,6 +296,7 @@ function TimedLyrics({
                     if (element) wordRefs.current.set(key, element);
                     else wordRefs.current.delete(key);
                   }}
+                  spans={wordSpans(line)}
                 />
               </button>
             </li>
@@ -299,16 +318,18 @@ function KaraokeText({
   index,
   active,
   register,
+  spans,
 }: {
   line: LyricLine;
   index: number;
   active: boolean;
   register: (word: number, element: HTMLSpanElement | null) => void;
+  spans: LyricWord[];
 }) {
-  if (!line.words?.length) return <span className="fp-karaoke-text">{line.text}</span>;
+  if (spans.length === 0) return <span className="fp-karaoke-text">{line.text}</span>;
   return (
     <span className="fp-karaoke-text">
-      {line.words.map((word, position) => (
+      {spans.map((word, position) => (
         <span
           // Words are positional: the same text can repeat inside a line.
           key={`${index}-${position}`}
@@ -317,7 +338,7 @@ function KaraokeText({
           ref={(element) => register(position, element)}
         >
           {word.text}
-          {position < line.words!.length - 1 ? " " : null}
+          {position < spans.length - 1 ? " " : null}
         </span>
       ))}
     </span>
