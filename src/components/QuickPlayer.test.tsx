@@ -102,3 +102,59 @@ it("drops stale responses after changing source and hides when focus leaves", as
   await act(async () => fake.events.get("visibility")?.(null));
   expect(host.childElementCount).toBe(0);
 });
+
+const playing: QuickState = {
+  current: track, playing: true, loading: false, progress: 26, duration: 119,
+  volume: 0.7, muted: false, shuffle: false, repeat: "off", favorite: false,
+};
+const broadcast = (patch: Partial<QuickState>) => act(async () => fake.events.get("state")?.({ ...playing, ...patch }));
+const timeline = () => host.querySelector<HTMLInputElement>(".quick-timeline input")!;
+const seekTo = (value?: string) => act(async () => {
+  const field = timeline();
+  field.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 1 }));
+  if (value === undefined) return;
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, value);
+  field.dispatchEvent(new Event("input", { bubbles: true }));
+});
+const releaseTimeline = () => act(async () => {
+  timeline().dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerId: 1 }));
+});
+const elapsed = () => host.querySelector(".quick-timeline")?.textContent;
+
+it("seeks at once on a press and keeps the pressed position through a stale update", async () => {
+  await mount();
+  await broadcast({});
+
+  await seekTo("72");
+  expect(fake.send).toHaveBeenLastCalledWith({ action: "seek", value: 72 });
+  expect(elapsed()).toContain("1:12");
+
+  await releaseTimeline();
+  expect(fake.send).toHaveBeenLastCalledWith({ action: "seek", value: 72 });
+
+  // The player's own progress is still one round trip behind: the thumb must
+  // hold the pressed position instead of falling back and jumping again.
+  await broadcast({ progress: 27 });
+  expect(elapsed()).toContain("1:12");
+
+  await broadcast({ progress: 72.4 });
+  await broadcast({ progress: 80 });
+  expect(elapsed()).toContain("1:20");
+});
+
+it("sends every move of a drag and drops the pressed position if the seek is refused", async () => {
+  await mount();
+  await broadcast({});
+
+  await seekTo("40");
+  await seekTo("60");
+  expect(fake.send.mock.calls.filter(([payload]) => payload.action === "seek")).toEqual([
+    [{ action: "seek", value: 40 }],
+    [{ action: "seek", value: 60 }],
+  ]);
+
+  await releaseTimeline();
+  await tick();
+  await act(async () => { await vi.advanceTimersByTimeAsync(1600); });
+  expect(elapsed()).toContain("0:26");
+});
