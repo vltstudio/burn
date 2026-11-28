@@ -72,6 +72,7 @@ export function TrackTable({
         const playing = Boolean(item.videoId) && item.videoId === currentVideoId;
         const artists = item.artists.slice(0, 2);
         const videoId = item.videoId;
+        const unavailable = !videoId && !item.browseId && !item.localPath;
         const favoriteId = favoriteKey(item);
         const liked = favoriteId !== null && favoriteIds.has(favoriteId);
         const artistNames = artists.length > 0 ? artists.map((artist, artistIndex) => (
@@ -118,7 +119,8 @@ export function TrackTable({
               {showCover ? <Cover className="tr-cover" src={smallThumb(item)} alt="" /> : null}
               <div className="tr-title-group">
                 <div className="tr-title-row">
-                  <button className="tr-title" title={item.title} onClick={(event) => {
+                  <button className="tr-title" disabled={unavailable}
+                    title={unavailable ? `${item.title} · Недоступно в YouTube Music` : item.title} onClick={(event) => {
                     event.stopPropagation();
                     if (item.videoId) onPlay(index);
                     else onOpen(item);

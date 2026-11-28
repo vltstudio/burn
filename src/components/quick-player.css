@@ -11,11 +11,11 @@ html.quick-window,
 }
 
 .quick-frame {
-  --q-edge: #413327;
-  --q-fill: #211a16;
-  --q-text: #fbf4ee;
-  --q-muted: #b4a198;
-  --q-accent: #f4a261;
+  --q-edge: var(--selected-edge);
+  --q-fill: var(--panel);
+  --q-text: var(--text);
+  --q-muted: var(--muted);
+  --q-accent: var(--accent);
   position: relative;
   display: grid;
   width: 100%;
@@ -59,7 +59,7 @@ html.quick-window,
   padding: 11px 15px 13px;
   border: 1px solid var(--q-edge);
   border-radius: 19px;
-  background: radial-gradient(ellipse at top left, #37271f, transparent 62%), var(--q-fill);
+  background: radial-gradient(ellipse at top left, var(--selected), transparent 62%), var(--q-fill);
   box-shadow: 0 3px 8px #0008;
   overflow: auto;
 }

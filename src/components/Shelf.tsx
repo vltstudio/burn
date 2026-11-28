@@ -29,11 +29,11 @@ export function Shelf({
   maxRows,
   showAlbum = true,
 }: Props) {
-  const more = onLoadMore && section.continuation ? (
+  const more = onLoadMore && (section.moreEndpoint || section.continuation) ? (
     <div className="load-more" aria-busy={loadingMore}>
       {loadMoreError ? <div className="load-error" role="alert">{loadMoreError}</div> : null}
       <button className="ghost-button" onClick={onLoadMore} disabled={loadingMore}>
-        {loadingMore ? "Загрузка…" : loadMoreError ? "Попробовать снова" : "Показать ещё"}
+        {loadingMore ? "Загрузка…" : loadMoreError ? "Попробовать снова" : section.moreEndpoint ? "Показать все" : "Показать ещё"}
       </button>
     </div>
   ) : null;

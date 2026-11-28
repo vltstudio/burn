@@ -7,6 +7,7 @@ import { PlayerProvider, usePlayback, usePlayer } from "./player";
 import type { MediaItem } from "./types";
 
 const backend = vi.hoisted(() => ({
+  openYouTubePlayer: vi.fn<(videoId: string) => Promise<void>>(),
   streamUrl: vi.fn<(videoId: string, refresh?: boolean) => Promise<string>>(),
   recommendations: vi.fn<(videoId: string) => Promise<MediaItem[]>>(),
   watchTrack: vi.fn<(videoId: string) => Promise<MediaItem>>(),
@@ -54,6 +55,7 @@ class FakeAudio {
   onplay: (() => void) | null = null;
   onpause: (() => void) | null = null;
   onerror: (() => void) | null = null;
+  error: { code: number } | null = null;
   playOverride: (() => Promise<void>) | null = null;
 
   constructor() {
@@ -259,6 +261,18 @@ describe("clip audio handoff", () => {
 });
 
 describe("queue and stream regressions", () => {
+  it("offers the requested track in the official player only after a playback refusal", async () => {
+    backend.streamUrl.mockRejectedValueOnce(new ApiFailure({ message: "YouTube просит подтвердить вход", needsAuth: false, needsPlayer: true }));
+    backend.openYouTubePlayer.mockResolvedValue(undefined);
+    await start();
+    expect(player.openOfficialPlayer).toBeTypeOf("function");
+    expect(backend.openYouTubePlayer).not.toHaveBeenCalled();
+    await update(() => { void player.openOfficialPlayer?.(); });
+    expect(backend.openYouTubePlayer).toHaveBeenCalledExactlyOnceWith(seed.videoId);
+    await start([queued]);
+    expect(player.openOfficialPlayer).toBeNull();
+  });
+
   it("selects the original requested row after filtering unplayable items", async () => {
     await start([track("invalid", { videoId: null }), seed, queued], 2);
     expect(player.current).toBe(queued);
@@ -318,6 +332,21 @@ describe("queue and stream regressions", () => {
     expect(player.playing).toBe(true);
   });
 
+  it("can request a fresh stream after a lookup fails while paused", async () => {
+    const stream = deferred<string>();
+    backend.streamUrl.mockReturnValueOnce(stream.promise).mockResolvedValueOnce("fixture:fresh");
+    await start();
+    await update(() => player.toggle());
+    await update(() => stream.reject(new Error("Connection lost")));
+    expectStopped();
+    expect(onToast).not.toHaveBeenCalled();
+
+    await update(() => player.toggle());
+    expect(backend.streamUrl).toHaveBeenLastCalledWith(seed.videoId, true);
+    expect(audio().src).toBe("fixture:fresh");
+    expect(player.playing).toBe(true);
+  });
+
   it("ignores a superseded audio.play rejection instead of reloading its track", async () => {
     const stream = deferred<string>();
     const play = deferred<void>();
@@ -332,6 +361,59 @@ describe("queue and stream regressions", () => {
     expect(player.playing).toBe(true);
     expect(backend.streamUrl).toHaveBeenCalledTimes(requests);
     expect(onToast).not.toHaveBeenCalled();
+  });
+
+  it("refreshes a cached stream once when playback hits a network error", async () => {
+    const stream = deferred<string>();
+    backend.streamUrl.mockReturnValueOnce(stream.promise).mockResolvedValueOnce("fixture:fresh");
+    await start();
+    const active = audio();
+    active.play.mockImplementationOnce(() => {
+      active.error = { code: 2 };
+      active.onerror?.();
+      return Promise.reject(new DOMException("Network connection lost", "AbortError"));
+    });
+    await update(() => stream.resolve("fixture:cached"));
+    expect(backend.streamUrl.mock.calls).toEqual([[seed.videoId], [seed.videoId, true]]);
+    expect(active.src).toBe("");
+    expect(audio().src).toBe("fixture:fresh");
+    expect(player.playing).toBe(true);
+    expect(onToast).not.toHaveBeenCalled();
+  });
+
+  it("resumes the same track and position after an in-flight stream fails", async () => {
+    await start([seed, queued]);
+    const old = audio();
+    const refreshed = deferred<string>();
+    backend.streamUrl.mockReturnValueOnce(refreshed.promise);
+    await update(() => {
+      old.currentTime = 48;
+      old.error = { code: 2 };
+      old.pause();
+      old.onerror?.();
+    });
+    expect(player.loading).toBe(true);
+    expect(player.progress).toBe(48);
+    expect(backend.streamUrl).toHaveBeenLastCalledWith(seed.videoId, true);
+
+    await update(() => refreshed.resolve("fixture:fresh"));
+    expect(audio().src).toBe("fixture:fresh");
+    expect(audio().currentTime).toBe(48);
+    expect(player.current).toBe(seed);
+    expect(player.queue).toEqual([seed, queued]);
+    expect(player.playing).toBe(true);
+    expect(onToast).not.toHaveBeenCalled();
+
+    const failed = audio();
+    const onerror = failed.onerror;
+    await update(() => {
+      failed.error = { code: 2 };
+      onerror?.();
+      onerror?.();
+    });
+    expectStopped();
+    expect(backend.streamUrl).toHaveBeenCalledTimes(2);
+    expect(onToast).toHaveBeenCalledTimes(1);
   });
 
   it("ignores old media callbacks after a new queue replaces the source", async () => {

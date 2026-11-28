@@ -2,12 +2,15 @@ import { useEffect, useRef, useState } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { ListMusic, X } from "lucide-react";
 import { api, ApiFailure } from "../api";
+import { useLibrary } from "../library";
+import { rememberSpotifyImport, useSpotifyLikedPlaylists } from "../ui/liked-playlists";
 import type { SpotifyImportProgress, SpotifyImportResult, SpotifyPlaylist } from "../types";
 
 interface Props {
   open: boolean;
   onClose: () => void;
-  onImported: (result?: SpotifyImportResult, liked?: boolean) => void;
+  onCheckTransfer: (id: string) => void;
+  onImported: () => void;
 }
 
 const STAGE_TEXT: Record<SpotifyImportProgress["stage"], string> = {
@@ -26,10 +29,17 @@ function describe(progress: SpotifyImportProgress | null): string {
   return `${stage} — ${progress.done} из ${progress.total}`;
 }
 
-export function SpotifyImportDialog({ open, onClose, onImported }: Props) {
+export function SpotifyImportDialog({ open, onClose, onImported, onCheckTransfer }: Props) {
+  const { accountKey, playlists } = useLibrary();
+  const sources = useSpotifyLikedPlaylists(accountKey, playlists);
+  const link = useRef<{ account: string; source: string; title: string; saved?: string } | null>(null);
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [url, setUrl] = useState("");
   const [preview, setPreview] = useState<SpotifyPlaylist | null>(null);
+  const previous = preview && Object.entries(sources.imports ?? {}).find(([, entry]) => {
+    const value = entry.source.split(/[?#]/)[0].replace(/\/$/, "");
+    return value === preview.id || value === `https://open.spotify.com/playlist/${preview.id}` || value === `spotify:playlist:${preview.id}`;
+  })?.[0];
   const [result, setResult] = useState<SpotifyImportResult | null>(null);
   const [progress, setProgress] = useState<SpotifyImportProgress | null>(null);
   const [busy, setBusy] = useState<"preview" | "import" | "auth" | null>(null);
@@ -59,6 +69,12 @@ export function SpotifyImportDialog({ open, onClose, onImported }: Props) {
       if (session.current === generation && active.current?.kind === "import"
         && event.payload.requestId === active.current.id) {
         setProgress(event.payload);
+        const dest = event.payload.playlistId;
+        const entry = link.current;
+        if (entry && dest && dest !== entry.saved) {
+          rememberSpotifyImport(entry.account, dest, entry.source === "liked", entry.source, entry.title);
+          entry.saved = dest;
+        }
       }
     });
     const subscribed = listener.current;
@@ -136,6 +152,8 @@ export function SpotifyImportDialog({ open, onClose, onImported }: Props) {
     if (!liked && !url.trim()) return;
     const id = begin("import");
     if (!id) return;
+    const source = liked ? "liked" : preview?.id ?? url.trim();
+    link.current = { account: accountKey, source, title: liked ? "Любимые треки Spotify" : preview?.name ?? "Плейлист Spotify" };
     try {
       if (!listener.current) throw new Error("Прогресс импорта ещё не подключён");
       await listener.current;
@@ -146,7 +164,8 @@ export function SpotifyImportDialog({ open, onClose, onImported }: Props) {
         ? await api.spotifyImportLiked(null, null, false, id)
         : await api.spotifyImport(url.trim(), null, null, true, id);
       if (active.current?.id === id) setResult(report);
-      onImported(report, liked);
+      rememberSpotifyImport(accountKey, report.playlistId, liked, source, report.title);
+      onImported();
     } catch (thrown) {
       if (active.current?.id === id) fail(thrown);
       onImported();
@@ -221,6 +240,7 @@ export function SpotifyImportDialog({ open, onClose, onImported }: Props) {
         <div className="spotify-row">
           <input
             className="text-input"
+            aria-label="Ссылка на плейлист Spotify"
             placeholder="https://open.spotify.com/playlist/…"
             value={url}
             disabled={busy !== null}
@@ -245,12 +265,13 @@ export function SpotifyImportDialog({ open, onClose, onImported }: Props) {
           <div className="spotify-liked-text">
             <strong>Любимые треки</strong>
             <span>
-              Войдите в Spotify, чтобы перенести «Мне нравится» в отдельный плейлист YouTube Music.
+              {sources.playlistId ? "Любимые треки уже перенесены. Можно проверить плейлист и добавить новые." :
+                "Песни с отметкой «Мне нравится» попадут в отдельный плейлист YouTube Music."}
             </span>
           </div>
           {spotifySignedIn ? (
-            <button className="ghost-button" aria-label="Перенести любимые треки из Spotify" onClick={() => void run(true)} disabled={busy !== null}>
-              {busy === "import" ? "Импортируем…" : "Перенести"}
+            <button className="ghost-button" onClick={() => sources.playlistId ? onCheckTransfer(sources.playlistId) : void run(true)} disabled={busy !== null}>
+              {busy === "import" ? "Импортируем…" : sources.playlistId ? "Проверить перенос" : "Перенести любимые треки"}
             </button>
           ) : (
             <button className="ghost-button" onClick={signIn} disabled={busy !== null}>
@@ -296,8 +317,8 @@ export function SpotifyImportDialog({ open, onClose, onImported }: Props) {
         ) : null}
 
         {preview && !result ? (
-          <button className="solid-button" onClick={() => void run()} disabled={busy !== null}>
-            {busy === "import" ? "Импортируем…" : "Импортировать в YouTube Music"}
+          <button className="solid-button" onClick={() => previous ? onCheckTransfer(previous) : void run()} disabled={busy !== null}>
+            {busy === "import" ? "Импортируем…" : previous ? "Проверить существующий перенос" : "Импортировать в YouTube Music"}
           </button>
         ) : null}
 
@@ -321,6 +342,7 @@ export function SpotifyImportDialog({ open, onClose, onImported }: Props) {
             <div className="spotify-name">
               Плейлист «{result.title}» создан: {result.added} из {result.total} треков
             </div>
+            <button className="ghost-button" onClick={() => onCheckTransfer(result.playlistId)}>Проверить перенос</button>
             <div className="spotify-meta">
               {result.cover
                 ? "Обложка перенесена"

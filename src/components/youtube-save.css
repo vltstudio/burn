@@ -3,8 +3,9 @@
   max-height: calc(100dvh - 32px);
   padding: 0;
   border: 1px solid var(--line);
-  border-radius: 18px;
-  background: var(--bg-2);
+  border-radius: var(--sheet-radius);
+  background: var(--panel);
+  box-shadow: var(--overlay-shadow);
   color: var(--text);
   animation: pop-in 180ms ease-out;
 }

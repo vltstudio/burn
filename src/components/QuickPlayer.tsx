@@ -5,6 +5,7 @@ import {
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import burnIcon from "../../assets/icon.png";
 import { api } from "../api";
+import { applyPalette } from "../theme";
 import { QUICK_STATE, QUICK_VISIBILITY, QUICK_WINDOW, quickRequest, quickWindow, subscribeQuick, type QuickPlacement, type QuickRequest, type QuickState } from "../quick-player";
 import type { MediaItem } from "../types";
 import { TrackCover } from "../ui/cover";
@@ -33,6 +34,8 @@ export default function QuickPlayer() {
   const timer = useRef<number | undefined>(undefined);
   const windowAction = useRef(0);
   const expandedRef = useRef(false);
+
+  useEffect(() => { applyPalette(state.palette); }, [state.palette]);
 
   useEffect(() => {
     let active = true;

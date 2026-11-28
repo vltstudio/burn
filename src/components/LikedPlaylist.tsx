@@ -1,6 +1,5 @@
-import { Play, Shuffle } from "lucide-react";
+import { PlaylistActions } from "./PlaylistActions";
 import { useId } from "react";
-import { usePlayback } from "../player";
 import type { MediaItem } from "../types";
 
 type Variant = "app" | "spotify" | "youtube";
@@ -57,9 +56,7 @@ export function LikedPlaylistCover({ variant, className = "" }: { variant: Varia
   );
 }
 
-export function LikedPlaylistHeader({ variant, items, hasMore = false }: { variant: Variant; items: MediaItem[]; hasMore?: boolean }) {
-  const player = usePlayback();
-  const playable = items.filter((item) => Boolean(item.videoId));
+export function LikedPlaylistHeader({ variant, items, hasMore = false, playlistId }: { variant: Variant; items: MediaItem[]; hasMore?: boolean; playlistId?: string | null }) {
   return (
     <div className={`liked-playlist-header liked-playlist-${variant}`}>
       <LikedPlaylistCover variant={variant} />
@@ -67,21 +64,7 @@ export function LikedPlaylistHeader({ variant, items, hasMore = false }: { varia
         <div className="hero-kind">{variant === "app" ? "Сердечки в приложении" : variant === "spotify" ? "Импорт из Spotify" : "Лайки YouTube Music"}</div>
         <h2 className="liked-playlist-title">{variant === "app" ? "Избранные" : variant === "spotify" ? "Любимые треки Spotify" : "Любимые треки YouTube"}</h2>
         <div className="liked-playlist-meta">{variant === "app" ? "BURN" : "YouTube Music"}<span>·</span>Треков: {items.length}{hasMore ? "+" : ""}</div>
-        <div className="hero-actions">
-          <button className="solid-button" disabled={playable.length === 0} onClick={() => player.playItems(playable, 0)}>
-            <Play size={13} fill="currentColor" /> Слушать
-          </button>
-          <button className="round-button" disabled={playable.length === 0} title="Перемешать" aria-label="Перемешать" onClick={() => {
-            const shuffled = [...playable];
-            for (let index = shuffled.length - 1; index > 0; index--) {
-              const next = Math.floor(Math.random() * (index + 1));
-              [shuffled[index], shuffled[next]] = [shuffled[next], shuffled[index]];
-            }
-            player.playItems(shuffled, 0);
-          }}>
-            <Shuffle size={15} strokeWidth={1.7} />
-          </button>
-        </div>
+        <PlaylistActions items={items} hasMore={hasMore} playlistId={playlistId} />
       </div>
     </div>
   );

@@ -116,6 +116,15 @@ async fn browse_more(
 }
 
 #[tauri::command]
+async fn browse_releases(
+    state: tauri::State<'_, Arc<AppState>>,
+    browse_id: String,
+    params: String,
+) -> Result<Section> {
+    api::browse_releases(&state.ytm, &browse_id, &params).await
+}
+
+#[tauri::command]
 async fn library_playlists(state: tauri::State<'_, Arc<AppState>>) -> Result<Vec<Section>> {
     api::library_playlists(&state.ytm).await
 }
@@ -301,6 +310,29 @@ async fn spotify_import_liked(
 fn emit_import(app: &tauri::AppHandle, progress: ImportProgress) {
     use tauri::Emitter;
     let _ = app.emit("spotify-import", progress);
+}
+
+#[tauri::command]
+async fn spotify_sync(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+    source: String,
+    playlist_id: String,
+    repair: bool,
+    request_id: String,
+) -> Result<import::SpotifySyncReport> {
+    import::reconcile(&state.spotify, &state.ytm, &source, &playlist_id, repair, &request_id,
+        |progress| emit_import(&app, progress)).await
+}
+
+#[tauri::command]
+async fn playlist_tracks(state: tauri::State<'_, Arc<AppState>>, playlist_id: String) -> Result<Vec<MediaItem>> {
+    let revision = state.ytm.session_revision();
+    let rows = favorites_sync::playlist_items(&state.ytm, &playlist_id).await?;
+    if state.ytm.session_revision() != revision {
+        return Err(Error::api("Аккаунт изменился во время загрузки плейлиста"));
+    }
+    Ok(rows)
 }
 
 #[tauri::command]
@@ -667,11 +699,18 @@ async fn auth_reset(state: tauri::State<'_, Arc<AppState>>, app: tauri::AppHandl
     let main = app
         .get_webview_window("main")
         .ok_or_else(|| Error::io("Главное окно не найдено"))?;
-    main.clear_all_browsing_data().map_err(|_| {
-        Error::io(
-            "Не удалось очистить данные окна входа. Перезапустите приложение и повторите сброс.",
-        )
-    })?;
+    // The main webview also owns the local UI preferences and Spotify storage.
+    let browser = main.clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<()> {
+        for origin in [ytm::ORIGIN, "https://www.youtube.com", "https://accounts.google.com"] {
+            let url = origin.parse().map_err(|_| Error::io("Некорректный адрес сервиса входа"))?;
+            let cookies = browser.cookies_for_url(url).map_err(|_| Error::io("Не удалось прочитать данные окна входа"))?;
+            for cookie in cookies {
+                browser.delete_cookie(cookie).map_err(|_| Error::io("Не удалось очистить данные входа Google"))?;
+            }
+        }
+        Ok(())
+    }).await.map_err(|_| Error::io("Очистка данных входа прервалась"))??;
     let cleared = async {
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -890,6 +929,19 @@ async fn favorite_toggle(
     Ok(added)
 }
 
+#[tauri::command]
+async fn favorites_add(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+    items: Vec<Favorite>,
+) -> Result<Vec<Favorite>> {
+    let added = state.local.add_favorites(items)?;
+    if !added.is_empty() {
+        queue_favorite_downloads(app, state.inner().clone());
+    }
+    Ok(added)
+}
+
 /// What the app keeps on disk for offline listening.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -996,19 +1048,32 @@ async fn stream_url(
     video_id: String,
     refresh: Option<bool>,
 ) -> Result<String> {
-    if refresh.unwrap_or(false) {
-        state.audio.invalidate(&video_id).await;
-    }
-    state
-        .audio
-        .resolve(&video_id)
-        .await
-        .map(String::from)
-        .map_err(|err| Error::player(err.to_string()))
+    audio_source(&state.audio, &video_id, refresh.unwrap_or(false)).await
 }
 
 // ---------------------------------------------------------------------- setup
 
+#[tauri::command]
+async fn open_youtube_player(app: tauri::AppHandle, video_id: String) -> Result<()> {
+    if !ytm::parse::valid_video_id(&video_id) {
+        return Err(Error::api("Некорректная ссылка на трек"));
+    }
+    let url = tauri::Url::parse(&format!("https://music.youtube.com/watch?v={video_id}"))
+        .map_err(|_| Error::api("Не удалось открыть ссылку на трек"))?;
+    // A normal first-party page handles sign-in and playback with its own controls.
+    if let Some(window) = app.get_webview_window("youtube-player") {
+        window.navigate(url).map_err(|_| Error::io("Не удалось открыть трек в YouTube Music"))?;
+        window.show().map_err(|_| Error::io("Не удалось показать YouTube Music"))?;
+        let _ = window.set_focus();
+    } else {
+        WebviewWindowBuilder::new(&app, "youtube-player", WebviewUrl::External(url))
+            .title("YouTube Music").inner_size(940.0, 680.0).build()
+            .map_err(|_| Error::io("Не удалось открыть окно YouTube Music"))?;
+    }
+    Ok(())
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -1045,7 +1110,11 @@ pub fn run() {
                 .timeout(std::time::Duration::from_secs(30))
                 .build()?;
 
-            let audio = AudioResolver::new(http.clone());
+            let audio = AudioResolver::new(
+                reqwest::Client::builder()
+                    .pool_max_idle_per_host(0)
+                    .build()?,
+            );
             let ytm = Arc::new(Ytm::new(http.clone(), config_dir.join("auth.json")));
             let local = Arc::new(LocalLibrary::load(
                 config_dir.join("local.json"),
@@ -1099,6 +1168,7 @@ pub fn run() {
             home,
             browse,
             browse_more,
+            browse_releases,
             library_playlists,
             library_albums,
             library_artists,
@@ -1117,6 +1187,7 @@ pub fn run() {
             archive_cover_set,
             archive_cover_clear,
             favorite_toggle,
+            favorites_add,
             add_to_playlist,
             create_playlist,
             playlist_delete,
@@ -1127,6 +1198,8 @@ pub fn run() {
             spotify_import,
             spotify_import_liked,
             spotify_import_cancel,
+            spotify_sync,
+            playlist_tracks,
             yandex_preview,
             yandex_import,
             yandex_import_cancel,
@@ -1147,6 +1220,7 @@ pub fn run() {
             #[cfg(desktop)]
             discord_presence_sync,
             stream_url,
+            open_youtube_player,
             downloads_state,
             quick_player::quick_window,
         ])
@@ -1265,14 +1339,13 @@ async fn keep_favorite_audio(
             },
         );
     };
-    let url = download_source(state, video_id).await?;
+    let url = audio_source(&state.audio, video_id, false).await?;
     let (path, bytes) = match state.downloads.fetch(video_id, url.as_str(), &report).await {
         Ok(done) => done,
         Err(first) => {
             // A stream URL expires, and a service can refuse one client: ask
             // for a fresh source once before giving up.
-            state.audio.invalidate(video_id).await;
-            let fallback = download_source(state, video_id).await?;
+            let fallback = audio_source(&state.audio, video_id, true).await?;
             state
                 .downloads
                 .fetch(video_id, fallback.as_str(), &report)
@@ -1308,11 +1381,13 @@ async fn keep_favorite_audio(
     Ok(record)
 }
 
-async fn download_source(state: &Arc<AppState>, video_id: &str) -> Result<String> {
-    state
-        .audio
-        .resolve(video_id)
-        .await
+async fn audio_source(audio: &AudioResolver, video_id: &str, refresh: bool) -> Result<String> {
+    let stream = if refresh {
+        audio.resolve_fresh(video_id).await
+    } else {
+        audio.resolve(video_id).await
+    };
+    stream
         .map(String::from)
         .map_err(|error| Error::player(error.to_string()))
 }

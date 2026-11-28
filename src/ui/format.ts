@@ -103,29 +103,31 @@ export function toFavorite(item: MediaItem): Favorite | null {
   return {
     id,
     title: item.title,
-    subtitle: item.subtitle,
+    subtitle: item.artists.map((artist) => artist.name).filter(Boolean).join(", ") || item.subtitle,
     duration: item.duration ? parseDuration(item.duration) : null,
     source,
     videoId: source === "yt" ? item.videoId : null,
     localPath: source === "local" ? (item.localPath ?? null) : null,
-    thumb: item.thumbs[0] ?? null,
+    thumb: source === "yt" ? [...item.thumbs].reverse().find((url) => url.startsWith("https://")) ?? null : bigThumb(item) ?? null,
   };
 }
 
 export function favoriteToItem(favorite: Favorite): MediaItem {
+  const local = favorite.source === "local";
+  const storedId = favorite.id.replace(/^yt:/, "");
   return {
     kind: "song",
     title: favorite.title,
     subtitle: favorite.subtitle,
-    videoId: favorite.videoId ?? favorite.id,
+    videoId: local ? favorite.id : favorite.videoId || (/^[\w-]{11}$/.test(storedId) ? storedId : null),
     browseId: null,
     playlistId: null,
     duration: favorite.duration ? formatTime(favorite.duration) : null,
     year: null,
     thumbs: favorite.thumb ? [favorite.thumb] : [],
-    artists: favorite.subtitle ? [{ name: favorite.subtitle, browseId: "" }] : [],
+    artists: favorite.subtitle ? [{ name: favorite.subtitle.split(/\s+[·•]\s+/)[0], browseId: "" }] : [],
     album: null,
-    source: favorite.source === "local" ? "local" : "youtube",
-    localPath: favorite.localPath,
+    source: local ? "local" : "youtube",
+    localPath: local ? favorite.localPath : null,
   };
 }

@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
 import { isTauri } from "@tauri-apps/api/core";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
+import { isAndroid } from "./platform";
 
 type Phase = "idle" | "checking" | "current" | "available" | "downloading" | "installing" | "installed" | "restarting" | "error";
 
@@ -38,7 +39,7 @@ function release(update: Update | null) {
 }
 
 export function updaterSupported(): boolean {
-  return import.meta.env.PROD && typeof window !== "undefined" && isTauri()
+  return import.meta.env.PROD && typeof window !== "undefined" && isTauri() && !isAndroid
     && !window.location.pathname.endsWith("/preview.html");
 }
 

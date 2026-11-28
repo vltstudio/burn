@@ -101,6 +101,12 @@ pub struct SpotifyTrack {
     pub seconds: Option<u32>,
 }
 
+impl SpotifyTrack {
+    fn unavailable(position: usize) -> Self {
+        Self { title: format!("Недоступная запись Spotify №{position}"), artists: Vec::new(), seconds: None }
+    }
+}
+
 #[derive(Serialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SpotifyPlaylist {
@@ -216,7 +222,7 @@ impl Spotify {
         let mut metas: Vec<Option<TrackMeta>> = service
             .uris
             .iter()
-            .map(|uri| known.get(uri).cloned())
+            .map(|uri| uri.as_ref().and_then(|uri| known.get(uri)).cloned())
             .collect();
 
         let missing: Vec<(usize, String)> = metas
@@ -224,7 +230,7 @@ impl Spotify {
             .enumerate()
             .filter(|(_, meta)| meta.is_none())
             .filter_map(|(index, _)| {
-                service.uris[index]
+                service.uris[index].as_deref()?
                     .strip_prefix("spotify:track:")
                     .map(|track| (index, track.to_string()))
             })
@@ -260,7 +266,7 @@ impl Spotify {
             }
         }
 
-        let unread = metas.iter().filter(|meta| meta.is_none()).count();
+        let unread = metas.iter().zip(&service.uris).filter(|(meta, uri)| meta.is_none() && uri.is_some()).count();
         if unread > 0 {
             return Err(Error::api(format!(
                 "Не удалось прочитать {unread} из {} треков Spotify. Импорт остановлен, чтобы не создать неполную копию. Повторите проверку позже.",
@@ -269,12 +275,12 @@ impl Spotify {
         }
         let tracks: Vec<SpotifyTrack> = metas
             .into_iter()
-            .flatten()
-            .map(|meta| SpotifyTrack {
+            .enumerate()
+            .map(|(index, meta)| meta.map_or_else(|| SpotifyTrack::unavailable(index + 1), |meta| SpotifyTrack {
                 title: meta.title,
                 artists: meta.artists,
                 seconds: meta.seconds,
-            })
+            }))
             .collect();
         if tracks.is_empty() {
             return Err(Error::api("В плейлисте Spotify не нашлось треков"));
@@ -296,6 +302,7 @@ impl Spotify {
     /// (`fetchLibraryTracks`), which works where the public Web API is
     /// unreachable.
     pub async fn liked(&self) -> Result<SpotifyPlaylist> {
+        let generation = self.session_generation.load(Ordering::SeqCst);
         if !self.is_signed_in().await {
             return Err(Error::Auth(
                 "Войдите в Spotify, чтобы перенести любимые треки".into(),
@@ -309,6 +316,9 @@ impl Spotify {
         }
 
         let tracks = self.liked_tracks().await?;
+        if self.session_generation.load(Ordering::SeqCst) != generation {
+            return Err(Error::Auth("Аккаунт Spotify изменился. Повторите проверку.".into()));
+        }
         if tracks.is_empty() {
             return Err(Error::api("В Spotify нет любимых треков"));
         }
@@ -815,7 +825,7 @@ struct ServicePlaylist {
     name: Option<String>,
     description: String,
     picture: Option<String>,
-    uris: Vec<String>,
+    uris: Vec<Option<String>>,
     position: usize,
     count: usize,
     length: Option<usize>,
@@ -833,10 +843,12 @@ fn json_service_playlist(text: &str) -> Result<ServicePlaylist> {
         .and_then(Value::as_array)
         .ok_or_else(|| Error::api("Spotify ответил без списка треков плейлиста"))?;
     let uris = items.iter().map(|item| {
-        let uri = item.get("uri").and_then(Value::as_str)
-            .filter(|uri| uri.strip_prefix("spotify:track:").is_some_and(valid_id))
-            .ok_or_else(|| Error::api("В плейлисте Spotify есть недоступный трек, локальный файл или подкаст. Такой список нельзя перенести полностью."))?;
-        Ok(uri.to_string())
+        match item.get("uri") {
+            Some(Value::Null) => Ok(None),
+            Some(Value::String(uri)) if uri.starts_with("spotify:local:") || uri.starts_with("spotify:episode:") => Ok(None),
+            Some(Value::String(uri)) if uri.strip_prefix("spotify:track:").is_some_and(valid_id) => Ok(Some(uri.clone())),
+            _ => Err(Error::api("Spotify вернул запись плейлиста в неизвестном формате")),
+        }
     }).collect::<Result<Vec<_>>>()?;
     Ok(ServicePlaylist {
         position: body
@@ -1196,9 +1208,11 @@ impl LibraryPages<'_> {
                 ));
             }
             for (index, item) in items.iter().enumerate() {
-                tracks.push(liked_track(item).ok_or_else(|| Error::api(format!(
+                let unavailable = item.pointer("/track/data").is_some_and(|data| data.is_null()
+                    || matches!(data.get("__typename").and_then(Value::as_str), Some("NotFound" | "RestrictedContent" | "LocalTrack")));
+                tracks.push(if unavailable { SpotifyTrack::unavailable(offset + index + 1) } else { liked_track(item).ok_or_else(|| Error::api(format!(
                     "Не удалось прочитать любимый трек №{}. В списке есть недоступные данные; импорт остановлен без создания плейлиста.", offset + index + 1
-                )))?);
+                )))? });
             }
             offset += found;
             if offset == page.total {
@@ -1420,12 +1434,11 @@ mod tests {
         assert_eq!(page.count, 2);
         assert_eq!(page.length, Some(5));
         assert!(page.truncated);
-        assert_eq!(page.uris, vec![uri, uri]);
+        assert_eq!(page.uris, vec![Some(uri.to_string()), Some(uri.to_string())]);
         assert!(json_service_playlist("{}").is_err());
-        assert!(
-            json_service_playlist(r#"{"contents":{"items":[{"uri":"spotify:local:track"}]}}"#)
-                .is_err()
-        );
+        let mixed = json_service_playlist(&json!({"contents":{"items":[{"uri":"spotify:local:track"},{"uri":uri},{"uri":null}]}}).to_string()).unwrap();
+        assert_eq!(mixed.uris, vec![None, Some(uri.to_owned()), None]);
+        assert!(json_service_playlist(r#"{"contents":{"items":[{"unexpected":true}]}}"#).is_err());
     }
 
     #[test]

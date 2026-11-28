@@ -1,6 +1,6 @@
 //! Matches source tracks, creates a YouTube Music playlist and fills it.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -63,6 +63,95 @@ pub struct ImportReport {
     pub unmatched: Vec<UnmatchedTrack>,
     pub cover: bool,
     pub cover_error: Option<String>,
+}
+
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpotifySyncReport {
+    pub total: usize,
+    pub present: usize,
+    pub added: usize,
+    pub repeats: usize,
+    pub missing: Vec<UnmatchedTrack>,
+    pub unmatched: Vec<UnmatchedTrack>,
+}
+
+fn compare_tracks(
+    source: &[SpotifyTrack],
+    matches: &[Option<MediaItem>],
+    destination: &BTreeSet<&str>,
+) -> (SpotifySyncReport, Vec<String>) {
+    let mut report = SpotifySyncReport { total: source.len(), ..Default::default() };
+    let mut to_add = Vec::new();
+    let mut seen = BTreeSet::new();
+    for (track, result) in source.iter().zip(matches) {
+        let label = || UnmatchedTrack { title: track.title.clone(), artists: track.artists.clone() };
+        match result.as_ref().and_then(|item| item.video_id.as_deref()) {
+            None => report.unmatched.push(label()),
+            Some(id) if !seen.insert(id) => report.repeats += 1,
+            Some(id) if destination.contains(id) => report.present += 1,
+            Some(id) => {
+                report.missing.push(label());
+                to_add.push(id.to_owned());
+            }
+        }
+    }
+    (report, to_add)
+}
+
+/// Compare against the current contents of the selected destination, including all pages.
+pub async fn reconcile(
+    spotify: &Spotify,
+    account: &Ytm,
+    source: &str,
+    playlist_id: &str,
+    repair: bool,
+    request_id: &str,
+    progress: impl Fn(ImportProgress),
+) -> Result<SpotifySyncReport> {
+    let job = RunningImport::start(request_id)?;
+    let revision = account.session_revision();
+    let ytm = Arc::new(account.authenticated_snapshot().await?);
+    let target = playlist_id.strip_prefix("VL").unwrap_or(playlist_id);
+    if target == "LM" {
+        return Err(Error::api("Выберите плейлист, в который переносили треки из Spotify"));
+    }
+    let progress = |mut update: ImportProgress| {
+        update.request_id = request_id.to_owned();
+        progress(update);
+    };
+    progress(ImportProgress { stage: "fetch".into(), ..Default::default() });
+    let playlist = if source == "liked" {
+        job.read(spotify.liked()).await?
+    } else {
+        job.read(spotify.playlist(source)).await?
+    };
+    let existing = job.read(crate::favorites_sync::playlist_members(&ytm, target)).await?;
+    let matches = match_tracks(ytm.clone(), &playlist.tracks, &existing, &job, &progress).await?;
+    let ids = existing.iter().filter_map(|item| item.video_id.as_deref()).collect();
+    let (report, missing) = compare_tracks(&playlist.tracks, &matches, &ids);
+    if !repair || missing.is_empty() {
+        let _guard = account.session_guard(revision).await?;
+        return Ok(report);
+    }
+    let mut submitted = 0;
+    for chunk in missing.chunks(ADD_CHUNK) {
+        job.check(Some((target, submitted)))?;
+        let _guard = account.session_guard(revision).await?;
+        api::add_tracks(&ytm, target, chunk).await?;
+        submitted += chunk.len();
+        progress(ImportProgress {
+            stage: "add".into(), done: submitted, total: missing.len(),
+            playlist_id: Some(target.to_owned()), ..Default::default()
+        });
+    }
+    // An accepted edit can be only partly visible. Count only entries read back from YouTube.
+    let confirmed = crate::favorites_sync::playlist_members(&ytm, target).await?;
+    let ids = confirmed.iter().filter_map(|item| item.video_id.as_deref()).collect();
+    let (mut verified, _) = compare_tracks(&playlist.tracks, &matches, &ids);
+    let _guard = account.session_guard(revision).await?;
+    verified.added = missing.iter().filter(|id| ids.contains(id.as_str())).count();
+    Ok(verified)
 }
 
 static ACTIVE: Mutex<Option<Arc<ImportJob>>> = Mutex::new(None);
@@ -150,6 +239,7 @@ pub async fn import(
     progress: impl Fn(ImportProgress),
 ) -> Result<ImportReport> {
     let job = RunningImport::start(&request.request_id)?;
+    let revision = ytm.session_revision();
     let progress = |mut update: ImportProgress| {
         update.request_id = request.request_id.clone();
         progress(update);
@@ -159,7 +249,7 @@ pub async fn import(
         ..ImportProgress::default()
     });
     let playlist = job.read(spotify.playlist(&request.url)).await?;
-    import_playlist(Some(spotify), ytm, playlist, &request, &job, progress).await
+    import_playlist(Some(spotify), ytm, revision, playlist, &request, &job, progress).await
 }
 
 /// The same pipeline for a list that has no playlist behind it, such as the
@@ -171,6 +261,7 @@ pub async fn import_liked(
     progress: impl Fn(ImportProgress),
 ) -> Result<ImportReport> {
     let job = RunningImport::start(&request.request_id)?;
+    let revision = ytm.session_revision();
     let progress = |mut update: ImportProgress| {
         update.request_id = request.request_id.clone();
         progress(update);
@@ -180,7 +271,7 @@ pub async fn import_liked(
         ..ImportProgress::default()
     });
     let playlist = job.read(spotify.liked()).await?;
-    import_playlist(Some(spotify), ytm, playlist, &request, &job, progress).await
+    import_playlist(Some(spotify), ytm, revision, playlist, &request, &job, progress).await
 }
 
 pub(crate) async fn import_metadata(
@@ -197,7 +288,8 @@ pub(crate) async fn import_metadata(
     };
     import_playlist(
         None,
-        ytm,
+        ytm.clone(),
+        ytm.session_revision(),
         playlist,
         &ImportRequest::default(),
         job,
@@ -209,6 +301,7 @@ pub(crate) async fn import_metadata(
 async fn import_playlist(
     spotify: Option<&Spotify>,
     ytm: Arc<Ytm>,
+    revision: u64,
     playlist: SpotifyPlaylist,
     request: &ImportRequest,
     job: &RunningImport,
@@ -224,44 +317,10 @@ async fn import_playlist(
         ));
     }
 
-    progress(ImportProgress {
-        stage: "match".into(),
-        total,
-        ..ImportProgress::default()
-    });
-    let mut results: Vec<Option<MediaItem>> = vec![None; total];
-    let mut set: JoinSet<(usize, Result<Option<MediaItem>>)> = JoinSet::new();
-    let mut next = 0;
-    let mut done = 0;
-    let allow_missing_duration = spotify.is_none();
-    while next < total || !set.is_empty() {
-        while next < total && set.len() < MATCH_WORKERS {
-            let index = next;
-            let track = playlist.tracks[index].clone();
-            let ytm = ytm.clone();
-            set.spawn(async move {
-                (
-                    index,
-                    match_track(&ytm, &track, allow_missing_duration).await,
-                )
-            });
-            next += 1;
-        }
-        let joined = job.read(async { Ok(set.join_next().await) }).await?;
-        if let Some(joined) = joined {
-            let (index, matched) = joined.map_err(|error| {
-                crate::error::Error::api(format!("Сопоставление прервалось: {error}"))
-            })?;
-            results[index] = matched?;
-            done += 1;
-            progress(ImportProgress {
-                stage: "match".into(),
-                done,
-                total,
-                ..ImportProgress::default()
-            });
-        }
-    }
+    let account = ytm;
+    let ytm = Arc::new(account.authenticated_snapshot().await?);
+    drop(account.session_guard(revision).await?);
+    let results = match_tracks(ytm.clone(), &playlist.tracks, &[], job, &progress).await?;
 
     let mut seen = BTreeSet::new();
     let video_ids: Vec<String> = results
@@ -309,11 +368,14 @@ async fn import_playlist(
         total,
         ..ImportProgress::default()
     });
+    let guard = account.session_guard(revision).await?;
     let playlist_id = api::create_playlist_full(&ytm, &title, &description, privacy, &[])
         .await.map_err(|error| match error {
             Error::Auth(_) => error,
             _ => Error::api(format!("Не удалось подтвердить создание плейлиста: {error}. Он мог создаться на сервере — проверьте библиотеку перед повтором.")),
         })?;
+
+    drop(guard);
 
     let mut added = 0;
     progress(ImportProgress {
@@ -324,11 +386,13 @@ async fn import_playlist(
     });
     for chunk in video_ids.chunks(ADD_CHUNK) {
         job.check(Some((&playlist_id, added)))?;
+        let guard = account.session_guard(revision).await?;
         if let Err(error) = api::add_tracks(&ytm, &playlist_id, chunk).await {
             return Err(Error::api(format!(
                 "Импорт прерван: {error}. Плейлист {playlist_id} сохранён; подтверждено {added} треков. Последняя порция могла добавиться — проверьте плейлист перед повтором."
             )));
         }
+        drop(guard);
         added += chunk.len();
         progress(ImportProgress {
             stage: "add".into(),
@@ -354,6 +418,7 @@ async fn import_playlist(
             Some(url) => match spotify.cover(url).await {
                 Ok(image) => {
                     job.check(Some((&playlist_id, added)))?;
+                    let _guard = account.session_guard(revision).await?;
                     match ytm.set_playlist_cover(&playlist_id, &image).await {
                         Ok(()) => cover = true,
                         // The playlist is already usable, so a cover failure is
@@ -388,6 +453,83 @@ async fn import_playlist(
     })
 }
 
+async fn match_tracks(
+    ytm: Arc<Ytm>,
+    tracks: &[SpotifyTrack],
+    existing: &[MediaItem],
+    job: &RunningImport,
+    progress: &impl Fn(ImportProgress),
+) -> Result<Vec<Option<MediaItem>>> {
+    let total = tracks.len();
+    progress(ImportProgress {
+        stage: "match".into(),
+        total,
+        ..ImportProgress::default()
+    });
+    let mut results: Vec<Option<MediaItem>> = vec![None; total];
+    let mut set: JoinSet<(usize, Result<Option<MediaItem>>)> = JoinSet::new();
+    let mut next = 0;
+    let mut done = 0;
+    let mut by_title: HashMap<String, Vec<&MediaItem>> = HashMap::new();
+    for item in existing {
+        by_title.entry(normalize(&item.title)).or_default().push(item);
+    }
+    while next < total || !set.is_empty() {
+        while next < total && set.len() < MATCH_WORKERS {
+            let index = next;
+            let track = &tracks[index];
+            next += 1;
+            if track.artists.is_empty() || track.title.trim().is_empty() {
+                done += 1;
+                continue;
+            }
+            if let Some(item) = by_title.get(&normalize(&track.title)).and_then(|candidates| {
+                let items = candidates.iter().copied()
+                    .filter(|item| item.video_id.as_deref().is_some_and(crate::ytm::parse::valid_video_id));
+                if track.seconds.is_none() { return exact_song_without_duration(items, track); }
+                items
+                    .map(|item| (score(track, item), item))
+                    .filter(|(score, _)| *score >= ACCEPT)
+                    .max_by(|a, b| a.0.total_cmp(&b.0))
+                    .map(|(_, item)| item)
+            }) {
+                results[index] = Some(item.clone());
+                done += 1;
+                continue;
+            }
+            let track = track.clone();
+            let ytm = ytm.clone();
+            set.spawn(async move {
+                (
+                    index,
+                    match_track(&ytm, &track).await,
+                )
+            });
+        }
+        if set.is_empty() {
+            job.check(None)?;
+            progress(ImportProgress { stage: "match".into(), done, total, ..Default::default() });
+            break;
+        }
+        let joined = job.read(async { Ok(set.join_next().await) }).await?;
+        if let Some(joined) = joined {
+            let (index, matched) = joined.map_err(|error| {
+                crate::error::Error::api(format!("Сопоставление прервалось: {error}"))
+            })?;
+            results[index] = matched?;
+            done += 1;
+            progress(ImportProgress {
+                stage: "match".into(),
+                done,
+                total,
+                ..ImportProgress::default()
+            });
+        }
+    }
+
+    Ok(results)
+}
+
 fn compose_description(playlist: &SpotifyPlaylist, request: &ImportRequest) -> String {
     let mut parts: Vec<String> = Vec::new();
     let own = request.description.as_deref().map(str::trim).unwrap_or("");
@@ -399,9 +541,10 @@ fn compose_description(playlist: &SpotifyPlaylist, request: &ImportRequest) -> S
     if !source.is_empty() {
         parts.push(source.chars().take(1800).collect());
     }
-    let url = request.url.trim();
-    if url.starts_with("http") {
-        parts.push(format!("Импортировано из Spotify: {url}"));
+    if playlist.id == "liked" {
+        parts.push("Импортировано из Spotify: https://open.spotify.com/collection/tracks".into());
+    } else if let Ok(id) = crate::spotify::parse_playlist_id(&request.url) {
+        parts.push(format!("Импортировано из Spotify: https://open.spotify.com/playlist/{id}"));
     }
     parts.join("\n\n")
 }
@@ -409,12 +552,11 @@ fn compose_description(playlist: &SpotifyPlaylist, request: &ImportRequest) -> S
 async fn match_track(
     ytm: &Ytm,
     track: &SpotifyTrack,
-    allow_missing_duration: bool,
 ) -> Result<Option<MediaItem>> {
     let query = search_query(track);
     let songs = search(ytm, &query, Some("songs")).await?;
-    if allow_missing_duration && track.seconds.is_none() {
-        return Ok(exact_song_without_duration(&songs, track));
+    if track.seconds.is_none() {
+        return Ok(exact_song_without_duration(songs.top.iter().chain(&songs.items), track).cloned());
     }
     if let Some((score, item)) = best(&songs, track) {
         if score >= ACCEPT {
@@ -426,13 +568,13 @@ async fn match_track(
         .map(|(_, item)| item))
 }
 
-fn exact_song_without_duration(results: &SearchResults, track: &SpotifyTrack) -> Option<MediaItem> {
+fn exact_song_without_duration<'a>(items: impl Iterator<Item = &'a MediaItem>, track: &SpotifyTrack) -> Option<&'a MediaItem> {
     let title = artist_name(&track.title);
     let artists: Vec<_> = track.artists.iter().map(|name| artist_name(name)).collect();
     if title.is_empty() || artists.is_empty() || artists.iter().any(String::is_empty) {
         return None;
     }
-    let mut matches = results.top.iter().chain(&results.items).filter(|item| {
+    let mut matches = items.filter(|item| {
         item.kind == "song"
             && item.video_id.as_ref().is_some_and(|id| !id.is_empty())
             && artist_name(&item.title) == title
@@ -452,7 +594,7 @@ fn exact_song_without_duration(results: &SearchResults, track: &SpotifyTrack) ->
     }) {
         return None;
     }
-    Some(first.clone())
+    Some(first)
 }
 
 /// A throttled or dropped search would otherwise read as "this track is not on
@@ -467,7 +609,7 @@ async fn search(ytm: &Ytm, query: &str, filter: Option<&str>) -> Result<SearchRe
             }
             Err(error) => {
                 return Err(Error::api(format!(
-                "Поиск YouTube Music недоступен: {error}. Импорт остановлен до создания плейлиста."
+                "Поиск YouTube Music недоступен: {error}. Повторите попытку."
             )))
             }
         }
@@ -738,6 +880,22 @@ mod tests {
     }
 
     #[test]
+    fn checking_and_repair_only_count_distinct_confirmed_tracks() {
+        let source = vec![track("Here", "Artist", 80), track("Missing", "Artist", 90),
+            track("Repeat", "Artist", 80), track("Rare", "Artist", 100)];
+        let matched = |id: &str| Some(MediaItem { video_id: Some(id.into()), ..MediaItem::default() });
+        let matches = vec![matched("AAAAAAAAAAA"), matched("BBBBBBBBBBB"), matched("AAAAAAAAAAA"), None];
+        let (first, missing) = compare_tracks(&source, &matches, &BTreeSet::from(["AAAAAAAAAAA"]));
+        assert_eq!((first.total, first.present, first.repeats, first.added), (4, 1, 1, 0));
+        assert_eq!(missing, ["BBBBBBBBBBB"]);
+        assert_eq!(first.missing[0].title, "Missing");
+        assert_eq!(first.unmatched[0].title, "Rare");
+        let (second, missing) = compare_tracks(&source, &matches, &BTreeSet::from(["AAAAAAAAAAA", "BBBBBBBBBBB"]));
+        assert_eq!((second.present, second.repeats, second.unmatched.len()), (2, 1, 1));
+        assert!(missing.is_empty());
+    }
+
+    #[test]
     fn normalization_drops_versions_and_asides() {
         assert_eq!(
             normalize("Hungry Like the Wolf - 2009 Remaster"),
@@ -790,12 +948,12 @@ mod tests {
             ],
             continuation: None,
         };
-        assert!(exact_song_without_duration(&results, &wanted).is_some());
+        assert!(exact_song_without_duration(results.top.iter().chain(&results.items), &wanted).is_some());
         assert_eq!(score(&wanted, &results.items[2]), 0.0);
         results
             .items
             .push(candidate("Песня", "Исполнитель", "5:00"));
-        assert!(exact_song_without_duration(&results, &wanted).is_none());
+        assert!(exact_song_without_duration(results.top.iter().chain(&results.items), &wanted).is_none());
     }
 
     #[test]
@@ -933,7 +1091,6 @@ mod tests {
         let found = runtime.block_on(match_track(
             &ytm,
             &track("Thriller - 2001 Remaster", "Michael Jackson", 358),
-            false,
         ));
         let found = found.expect("search").expect("match");
         assert!(found.title.to_lowercase().contains("thriller"));

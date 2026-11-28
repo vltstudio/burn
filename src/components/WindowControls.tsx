@@ -1,11 +1,13 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Copy, Minus, Square, X } from "lucide-react";
 import { useEffect, useState } from "react";
+import { isAndroid } from "../platform";
 
 export function WindowControls() {
   const [maximized, setMaximized] = useState(false);
 
   useEffect(() => {
+    if (isAndroid) return;
     let disposed = false;
     const sync = async () => {
       const next = await getCurrentWindow().isMaximized();
@@ -30,6 +32,7 @@ export function WindowControls() {
     }
   };
 
+  if (isAndroid) return null;
   const maximizeLabel = maximized ? "Восстановить окно" : "Развернуть окно";
   return (
     <div className="window-corner" role="group" aria-label="Управление окном">

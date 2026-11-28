@@ -38,7 +38,9 @@ export default function App({
 
   const toast = useCallback<ToastFn>((message, kind = "info") => {
     const id = ++toastId.current;
-    setToasts((current) => [...current, { id, message, kind }]);
+    setToasts((current) => [
+      ...current.filter((item) => item.message !== message || item.kind !== kind), { id, message, kind },
+    ]);
     window.setTimeout(() => {
       setToasts((current) => current.filter((item) => item.id !== id));
     }, 5200);
@@ -66,6 +68,7 @@ function Shell({
   const [stack, setStack] = useState<Route[]>([initialRoute ?? { name: "search" }]);
   const [auth, setAuth] = useState<AuthStatus | null>(null);
   const [settingsTab, setSettingsTab] = useState<SettingsTab | null>(null);
+  const [transferTarget, setTransferTarget] = useState("");
   const [searchQuery, setSearchQuery] = useState(initialQuery);
   const [filter, setFilter] = useState<SearchFilter>("all");
   const [railOpen, setRailOpen] = useState(
@@ -111,6 +114,9 @@ function Shell({
 
   useEffect(() => {
     refreshAuth();
+    const reconnect = () => { refreshAuth(); setDataEpoch((value) => value + 1); };
+    window.addEventListener("online", reconnect);
+    return () => window.removeEventListener("online", reconnect);
   }, [refreshAuth]);
 
   useEffect(() => {
@@ -204,6 +210,7 @@ function Shell({
                   onOpen={openItem}
                   onRequestSignIn={() => setSettingsTab("account")}
                   onOpenLocalSettings={() => setSettingsTab("local")}
+                  onCheckTransfer={(id) => { setTransferTarget(id); setSettingsTab("spotify"); }}
                 />
               ) : null}
               {route.name === "detail" ? (
@@ -226,8 +233,9 @@ function Shell({
           <SettingsDialog
             open={settingsTab !== null}
             initialTab={settingsTab ?? "account"}
+            transferTarget={transferTarget}
             auth={auth}
-            onClose={() => setSettingsTab(null)}
+            onClose={() => { setSettingsTab(null); setTransferTarget(""); }}
             onAuthChanged={refreshAuth}
             onToast={toast}
             discord={discord}

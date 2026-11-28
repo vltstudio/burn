@@ -1,9 +1,7 @@
 .full-player:modal {
-  --fp-shade-rgb: 12, 13, 18;
-  --fp-panel-tint: rgba(var(--fp-artwork-rgb, 45, 45, 54), .12);
-  --fp-panel: linear-gradient(var(--fp-panel-tint), var(--fp-panel-tint)), #121218;
-  --muted: #c9c8ce;
-  --text: #f7f6f9;
+  --fp-shade-rgb: 15, 14, 13;
+  --fp-panel-tint: rgba(var(--fp-artwork-rgb, var(--tint-rgb)), .12);
+  --fp-panel: linear-gradient(var(--fp-panel-tint), var(--fp-panel-tint)), var(--panel);
   background: rgb(var(--fp-shade-rgb));
   overflow: hidden;
 }
@@ -15,7 +13,7 @@
 }
 
 .full-player:modal::backdrop {
-  background: #0c0d12;
+  background: var(--bg);
 }
 
 .full-player .fp-artwork {
@@ -24,7 +22,7 @@
   z-index: -2;
   overflow: hidden;
   pointer-events: none;
-  background: radial-gradient(ellipse at 21% 37%, rgba(var(--fp-artwork-rgb, 51, 51, 65), .38), transparent 76%);
+  background: radial-gradient(ellipse at 21% 37%, rgba(var(--fp-artwork-rgb, var(--tint-rgb)), .24), transparent 76%);
 }
 
 .full-player .fp-artwork > img {

@@ -107,9 +107,11 @@ export function PlayerBar() {
           </button>
           <div className="pb-text">
             <div className="pb-title" title={current?.title}>{current?.title ?? ""}</div>
-            <div className="pb-sub" title={current?.artists.map((artist) => artist.name).join(", ") || current?.subtitle}>
+            {player.openOfficialPlayer ? <button className="official-player-link" onClick={player.openOfficialPlayer}>
+              Открыть в YouTube Music
+            </button> : <div className="pb-sub" title={current?.artists.map((artist) => artist.name).join(", ") || current?.subtitle}>
               <ArtistNames artists={current?.artists ?? []} fallback={current?.subtitle} />
-            </div>
+            </div>}
           </div>
           <button
             className={`ctl small pb-like ${isLiked ? "active" : ""}`}
@@ -180,7 +182,7 @@ export function PlayerBar() {
             <ListMusic size={15} strokeWidth={1.7} />
           </button>
           <button
-            className="ctl small"
+            className="ctl small pb-expand"
             onClick={() => player.setExpanded(true)}
             disabled={!current}
             title="Развернуть плеер"

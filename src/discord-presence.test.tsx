@@ -59,7 +59,7 @@ describe("Discord track presence", () => {
   it("publishes a stable timeline, updates on a seek, and clears on pause", async () => {
     await render();
     expect(fake.sync).toHaveBeenCalledExactlyOnceWith({
-      title: "Glass Horizon", artist: "Artist", coverUrl: track.thumbs[1], startMs: now - 20_000, endMs: now + 180_000, local: false,
+      title: "Glass Horizon", artist: "Artist", coverUrl: track.thumbs[1], videoId: track.videoId, startMs: now - 20_000, endMs: now + 180_000, local: false,
     });
     now += 500;
     player.progress += 0.5;
@@ -109,6 +109,26 @@ describe("Discord track presence", () => {
     expect(fake.sync).toHaveBeenLastCalledWith(expect.objectContaining({
       coverUrl: "https://i.ytimg.com/vi/example0001/hqdefault.jpg",
     }));
+  });
+
+  it("keeps a downloaded YouTube favorite public even when its only artwork is a local file", () => {
+    const cached = { ...track, source: "youtube" as const, thumbs: ["asset://localhost/cover", "https://lh3.googleusercontent.com/private/file.png"] };
+    expect(discordTrackActivity(cached, 0, 200, false, now)).toMatchObject({
+      artist: "Artist", local: false, coverUrl: "https://i.ytimg.com/vi/example0001/hqdefault.jpg",
+    });
+    expect(discordTrackActivity({ ...cached, thumbs: [...cached.thumbs, track.thumbs[1]] }, 0, 200, false, now)?.coverUrl).toBe(track.thumbs[1]);
+  });
+
+  it("retries a rejected pause clear even after the player stops sending progress updates", async () => {
+    vi.useFakeTimers();
+    try {
+      await render();
+      fake.sync.mockRejectedValueOnce(new Error("temporarily unavailable"));
+      player.playing = false;
+      await render();
+      await act(async () => { await vi.advanceTimersByTimeAsync(2100); });
+      expect(fake.sync.mock.calls.map(([value]) => value?.title ?? null)).toEqual([track.title, null, null]);
+    } finally { vi.useRealTimers(); }
   });
 
   it("does not publish a track until playback starts", async () => {

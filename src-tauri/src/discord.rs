@@ -29,6 +29,7 @@ pub(crate) struct Activity {
     pub(crate) title: String,
     pub(crate) artist: Option<String>,
     pub(crate) cover_url: Option<String>,
+    pub(crate) video_id: Option<String>,
     pub(crate) start_ms: Option<u64>,
     pub(crate) end_ms: Option<u64>,
     pub(crate) local: bool,
@@ -350,18 +351,20 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
 
     async fn set_activity(&mut self, activity: Option<&Activity>) -> Result<(), Fault> {
         let mut payload = activity.map(Activity::payload);
-        let result = self.send_activity(payload.as_ref()).await;
-        if result == Err(Fault::Rejected)
-            && payload
-                .as_mut()
-                .and_then(Value::as_object_mut)
-                .and_then(|object| object.remove("assets"))
-                .is_some()
-        {
-            self.send_activity(payload.as_ref()).await
-        } else {
-            result
+        let mut result = self.send_activity(payload.as_ref()).await;
+        if result != Err(Fault::Rejected) { return result; }
+        let Some(data) = payload.as_mut().filter(|data| data.get("assets").is_some()) else { return result };
+        if let Some(id) = activity.filter(|activity| !activity.local).and_then(|activity| activity.video_id.as_deref())
+            .filter(|id| crate::ytm::parse::valid_video_id(id)) {
+            let thumbnail = format!("https://i.ytimg.com/vi/{id}/hqdefault.jpg");
+            if data.pointer("/assets/large_image").and_then(Value::as_str) != Some(thumbnail.as_str()) {
+                data["assets"]["large_image"] = json!(thumbnail);
+                result = self.send_activity(Some(data)).await;
+                if result != Err(Fault::Rejected) { return result; }
+            }
         }
+        data.as_object_mut().unwrap().remove("assets");
+        self.send_activity(Some(data)).await
     }
 
     async fn send_activity(&mut self, activity: Option<&Value>) -> Result<(), Fault> {
@@ -590,6 +593,7 @@ mod tests {
             title: title.into(),
             artist: Some("Artist".into()),
             cover_url: None,
+            video_id: None,
             start_ms: Some(1_700_000_000_000),
             end_ms: None,
             local: false,
@@ -748,7 +752,8 @@ mod tests {
         let (mut presence, pipes, _) = launch();
         let mut peer = fake_pipe(&pipes);
         presence.set(Some(Activity {
-            cover_url: Some("https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg".into()),
+            cover_url: Some("https://lh3.googleusercontent.com/album=w540-h540".into()),
+            video_id: Some("dQw4w9WgXcQ".into()),
             ..track("A track")
         }));
         handshake(&mut peer).await;
@@ -759,6 +764,9 @@ mod tests {
             json!({ "cmd": SET_ACTIVITY, "evt": "ERROR", "nonce": with_art["nonce"] }),
         )
         .await;
+        let fallback = request(&mut peer, FRAME).await;
+        assert_eq!(fallback["args"]["activity"]["assets"]["large_image"], "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg");
+        reply(&mut peer, json!({ "cmd": SET_ACTIVITY, "evt": "ERROR", "nonce": fallback["nonce"] })).await;
         let text_only = request(&mut peer, FRAME).await;
         assert_eq!(text_only["args"]["activity"], track("A track").payload());
         ack(&mut peer, &text_only).await;

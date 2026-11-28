@@ -12,6 +12,15 @@ import { api, ApiFailure, localMediaUrl } from "./api";
 import { downloadedPath } from "./downloads";
 import type { MediaItem } from "./types";
 
+const MEDIA_ERR_NETWORK = 2;
+const MEDIA_ERR_SRC_NOT_SUPPORTED = 4;
+
+function canRefreshStream(audio: HTMLAudioElement, error?: unknown) {
+  return audio.error?.code === MEDIA_ERR_NETWORK
+    || audio.error?.code === MEDIA_ERR_SRC_NOT_SUPPORTED
+    || (error instanceof DOMException && error.name === "NotSupportedError");
+}
+
 export type RepeatMode = "off" | "all" | "one";
 
 interface ClipPlayback {
@@ -31,6 +40,7 @@ interface PlayerApi {
   upNext: number[];
   playing: boolean;
   loading: boolean;
+  openOfficialPlayer: (() => Promise<void>) | null;
   progress: number;
   duration: number;
   clipPlayback: ClipPlayback | null;
@@ -101,6 +111,7 @@ export function PlayerProvider({ children, onToast }: Props) {
   const [queue, setQueue] = useState<MediaItem[]>([]);
   const [index, setIndex] = useState(-1);
   const [playing, setPlaying] = useState(false);
+  const [failedVideo, setFailedVideo] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -178,9 +189,10 @@ export function PlayerProvider({ children, onToast }: Props) {
   }, [volume, muted]);
 
   const load = useCallback(
-    async (item: MediaItem) => {
+    async function loadTrack(item: MediaItem, { position = 0, refresh = false } = {}) {
       if (!item.videoId && !item.localPath) return;
       const token = ++requestRef.current;
+      setFailedVideo(null);
       clipLeaseRef.current = null;
       setClipPlayback(null);
       cancelRadio();
@@ -192,8 +204,28 @@ export function PlayerProvider({ children, onToast }: Props) {
       audioRef.current = audio;
       playRequestedRef.current = true;
       let starting = true;
+      const isCurrent = () => requestRef.current === token && audioRef.current === audio;
+      const retryStream = (error?: unknown) => {
+        if (refresh || item.localPath || !item.videoId || !canRefreshStream(audio, error)) return false;
+        void loadTrack(item, { position: audio.currentTime, refresh: true });
+        return true;
+      };
+      const failPlayback = (error?: unknown) => {
+        const message = error instanceof ApiFailure ? error.message : !item.localPath && canRefreshStream(audio, error)
+          ? "Не удалось загрузить аудио YouTube. Проверьте подключение или VPN."
+          : "Не удалось воспроизвести трек.";
+        playRequestedRef.current = false;
+        disposeAudioRef.current?.();
+        audioRef.current = null;
+        setPlaying(false);
+        setLoading(false);
+        if (!item.localPath && item.videoId && error instanceof ApiFailure && error.needsPlayer) {
+          setFailedVideo(item.videoId);
+        }
+        onToast(message, "error");
+      };
       const startupTimer = window.setTimeout(() => {
-        if (requestRef.current !== token) return;
+        if (!isCurrent()) return;
         ++requestRef.current;
         playRequestedRef.current = false;
         disposeAudioRef.current?.();
@@ -203,34 +235,33 @@ export function PlayerProvider({ children, onToast }: Props) {
         onToast("Превышено время ожидания воспроизведения.", "error");
       }, 30_000);
       audio.ontimeupdate = () => {
-        if (requestRef.current === token && !clipLeaseRef.current) setProgress(audio.currentTime);
+        if (isCurrent() && !clipLeaseRef.current) setProgress(audio.currentTime);
       };
       audio.onloadedmetadata = audio.ondurationchange = () => {
-        if (requestRef.current === token) {
+        if (isCurrent()) {
           setDuration(Number.isFinite(audio.duration) ? audio.duration : 0);
         }
       };
       audio.onended = () => {
-        if (requestRef.current === token && audio.ended && playRequestedRef.current) {
+        if (isCurrent() && audio.ended && playRequestedRef.current) {
           setPlaying(false);
           endedRef.current();
         }
       };
       audio.onplay = () => {
-        if (requestRef.current !== token || !playRequestedRef.current) audio.pause();
+        if (!isCurrent() || !playRequestedRef.current) audio.pause();
         else setPlaying(true);
       };
       audio.onpause = () => {
-        if (requestRef.current === token && audio.paused) {
-          if (!starting && !audio.ended) playRequestedRef.current = false;
+        if (isCurrent() && audio.paused) {
+          if (!starting && !audio.ended && !audio.error) playRequestedRef.current = false;
           setPlaying(false);
         }
       };
       audio.onerror = () => {
-        if (requestRef.current === token) {
-          if (!starting) playRequestedRef.current = false;
-          setPlaying(false);
-        }
+        if (!isCurrent() || clipLeaseRef.current) return;
+        setPlaying(false);
+        if (playRequestedRef.current && !retryStream()) failPlayback();
       };
       disposeAudioRef.current = () => {
         window.clearTimeout(startupTimer);
@@ -242,59 +273,49 @@ export function PlayerProvider({ children, onToast }: Props) {
       };
       setPlaying(false);
       setLoading(true);
-      setProgress(0);
+      setProgress(position);
       setDuration(0);
       // A favourited track keeps its own copy: that one plays with no network
       // and needs no stream lookup, which would fail offline.
-      const offlinePath = item.localPath ?? downloadedPath(item.videoId);
+      const offlinePath = refresh ? null : item.localPath ?? downloadedPath(item.videoId);
       try {
-        const url = offlinePath ? localMediaUrl(offlinePath) : await api.streamUrl(item.videoId!);
-        if (requestRef.current !== token) return;
+        const url = offlinePath
+          ? localMediaUrl(offlinePath)
+          : await (refresh ? api.streamUrl(item.videoId!, true) : api.streamUrl(item.videoId!));
+        if (!isCurrent()) return;
         audio.src = url;
-        audio.currentTime = 0;
-        try {
-          if (playRequestedRef.current) await audio.play();
-        } catch (error) {
-          if (requestRef.current !== token) return;
-          if (!playRequestedRef.current) return;
-          // A downloaded copy that the decoder rejects falls back to the
-          // stream; a real local file has no stream to fall back to.
-          if (item.localPath || !item.videoId || !(error instanceof DOMException) || error.name !== "NotSupportedError") {
-            throw error;
-          }
-          const refreshed = await api.streamUrl(item.videoId, true);
-          if (requestRef.current !== token) return;
-          audio.src = refreshed;
-          if (playRequestedRef.current) await audio.play();
-        }
-        if (requestRef.current !== token) return;
-        if (!item.localPath && item.videoId && item.artists.length === 0) {
+        audio.currentTime = position;
+        if (playRequestedRef.current) await audio.play();
+        if (!isCurrent()) return;
+        if (!item.localPath && item.videoId && (!item.artists.some((artist) => artist.browseId)
+            || !item.thumbs.some((url) => url.startsWith("https://")))) {
           void api
             .watchTrack(item.videoId)
             .then((full) => {
               if (requestRef.current !== token) return;
-              const entries = queueRef.current.map((entry) =>
-                !entry.localPath && entry.videoId === full.videoId && entry.artists.length === 0
-                  ? { ...entry, artists: full.artists, album: entry.album ?? full.album }
-                  : entry,
-              );
+              const entries = queueRef.current.map((entry) => {
+                if (entry.localPath || entry.videoId !== full.videoId) return entry;
+                const artists = !entry.artists.some((artist) => artist.browseId) && full.artists.length
+                  && (full.artists.some((artist) => artist.browseId) || !entry.artists.length) ? full.artists : entry.artists;
+                const album = entry.album ?? full.album;
+                const thumbs = full.thumbs.filter((url) => url.startsWith("https://") && !entry.thumbs.includes(url));
+                if (artists === entry.artists && album === entry.album && !thumbs.length) return entry;
+                return { ...entry, artists, album, thumbs: [...entry.thumbs, ...thumbs] };
+              });
+              if (entries.every((entry, i) => entry === queueRef.current[i])) return;
               queueRef.current = entries;
               setQueue(entries);
             })
             .catch(() => undefined);
         }
       } catch (error) {
-        if (requestRef.current !== token) return;
-        playRequestedRef.current = false;
-        disposeAudioRef.current?.();
-        audioRef.current = null;
-        setPlaying(false);
-        const failure = error instanceof ApiFailure ? error : null;
-        onToast(
-          failure?.message ??
-            "Не удалось воспроизвести трек.",
-          "error",
-        );
+        if (!isCurrent()) return;
+        if (playRequestedRef.current) {
+          if (!retryStream(error)) failPlayback(error);
+        } else if (!audio.src) {
+          disposeAudioRef.current?.();
+          audioRef.current = null;
+        }
       } finally {
         window.clearTimeout(startupTimer);
         starting = false;
@@ -539,14 +560,18 @@ export function PlayerProvider({ children, onToast }: Props) {
       setPlaying(false);
       return;
     }
+    if (audio && !item.localPath && item.videoId && canRefreshStream(audio)) {
+      void load(item, { position: audio.currentTime, refresh: true });
+      return;
+    }
     playRequestedRef.current = true;
     if (audio?.src) {
       const token = requestRef.current;
       void audio.play().catch(() => {
-        if (requestRef.current === token && playRequestedRef.current) void load(item);
+        if (requestRef.current === token && audioRef.current === audio && playRequestedRef.current) void load(item);
       });
     } else if (!audio) {
-      void load(item);
+      void load(item, { refresh: !item.localPath && Boolean(item.videoId) });
     }
   }, [cancelRadio, load]);
 
@@ -657,6 +682,14 @@ export function PlayerProvider({ children, onToast }: Props) {
     [cancelRadio],
   );
 
+  const openOfficialPlayer = useMemo(() => {
+    if (!failedVideo || failedVideo !== current?.videoId) return null;
+    return async () => {
+      try { await api.openYouTubePlayer(failedVideo); }
+      catch (error) { onToast(error instanceof Error ? error.message : String(error), "error"); }
+    };
+  }, [failedVideo, current?.videoId, onToast]);
+
   const playback = useMemo<PlaybackApi>(
     () => ({
       queue,
@@ -665,6 +698,7 @@ export function PlayerProvider({ children, onToast }: Props) {
       upNext,
       playing,
       loading,
+      openOfficialPlayer,
       shuffle,
       repeat,
       playItems,
@@ -690,6 +724,7 @@ export function PlayerProvider({ children, onToast }: Props) {
       upNext,
       playing,
       loading,
+      openOfficialPlayer,
       shuffle,
       repeat,
       playItems,

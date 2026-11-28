@@ -17,7 +17,7 @@ export function DiscordSettings({ preferences, status, loadError, retry, configu
     <SettingSection title="Discord">
       <p className="field-hint">
         BURN показывает название, исполнителя, обложку и время воспроизведения.
-        Видимость определяют твои настройки приватности в Discord.
+        Порядок нескольких одновременных активностей выбирает Discord.
       </p>
       {preferences ? (
         <DiscordForm preferences={preferences} status={status} configure={configure} />

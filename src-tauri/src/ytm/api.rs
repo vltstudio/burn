@@ -71,7 +71,14 @@ pub async fn watch_track(ytm: &Ytm, video_id: &str) -> Result<MediaItem> {
         .ok_or_else(|| Error::api("YouTube не вернул доступный трек по этой ссылке"))
 }
 
-pub async fn resolve_clip(ytm: &Ytm, video_id: &str, kind: Option<&str>) -> Result<Option<String>> {
+#[derive(serde::Deserialize)]
+pub struct ClipHint {
+    pub title: String,
+    pub artists: Vec<parse::ItemRef>,
+    pub duration: Option<String>,
+}
+
+pub async fn resolve_clip(ytm: &Ytm, video_id: &str, kind: Option<&str>, hint: Option<ClipHint>) -> Result<Option<String>> {
     if !parse::valid_video_id(video_id) {
         return Ok(None);
     }
@@ -97,31 +104,36 @@ pub async fn resolve_clip(ytm: &Ytm, video_id: &str, kind: Option<&str>) -> Resu
             }),
         )
         .await?;
+    if !parse::allows_clip_lookup(&response, video_id) { return Ok(None); }
     if let Some(id) = parse::clip_counterpart(&response, video_id) {
         return Ok(Some(id.to_owned()));
     }
-    let Some(track) = parse::watch_track(&response, video_id) else {
-        return Ok(None);
-    };
+    let mut track = parse::watch_track(&response, video_id).unwrap_or_default();
+    if let Some(hint) = hint {
+        if track.title.is_empty() { track.title = hint.title; }
+        if track.artists.is_empty() { track.artists = hint.artists; }
+        if track.duration.is_none() { track.duration = hint.duration; }
+    }
+    track.video_id = Some(video_id.to_owned());
     if track.kind == "video" {
         return Ok(Some(video_id.to_owned()));
     }
     let Some(artist) = track.artists.first() else {
         return Ok(None);
     };
-    if track.duration.is_none() {
+    if track.title.trim().is_empty() {
         return Ok(None);
     }
-    let videos = ytm
-        .request(
-            "search",
-            json!({
-                "query": format!("{} {}", artist.name, track.title),
-                "params": search_params(Some("videos")),
-            }),
-        )
-        .await?;
-    Ok(parse::clip_search_match(&videos, &track))
+    let query = format!("{} {}", artist.name, track.title);
+    for query in [query.clone(), format!("{query} official video")] {
+        let videos = ytm.request("search", json!({
+            "query": query, "params": search_params(Some("videos")),
+        })).await?;
+        if let Some(id) = parse::clip_search_match(&videos, &track) {
+            return Ok(Some(id));
+        }
+    }
+    Ok(None)
 }
 
 fn recommendation_body(video_id: &str) -> Result<Value> {
@@ -183,13 +195,30 @@ pub async fn browse(ytm: &Ytm, browse_id: &str) -> Result<Detail> {
     let response = ytm
         .request("browse", json!({ "browseId": browse_id }))
         .await?;
-    if is_sign_in_page(&response) {
-        return Err(Error::Auth(
-            "Войдите через Google, чтобы открыть этот плейлист".into(),
-        ));
+    browse_detail(&response, browse_id)
+}
+
+#[cfg(test)]
+#[test]
+fn public_artist_with_a_sign_in_button_stays_readable() {
+    let response = json!({"header":{"musicImmersiveHeaderRenderer":{
+        "title":{"simpleText":"Clonnex"},
+        "subscriptionButton":{"buttonRenderer":{"navigationEndpoint":{"signInEndpoint":{}}}}
+    }}});
+    assert_eq!(browse_detail(&response, "UCfixture").unwrap().header.title, "Clonnex");
+    let sign_in = json!({"contents":{"buttonRenderer":{"navigationEndpoint":{"signInEndpoint":{}}}}});
+    assert!(matches!(browse_detail(&sign_in, "VLprivate"), Err(Error::Auth(_))));
+}
+
+fn browse_detail(response: &Value, browse_id: &str) -> Result<Detail> {
+    let mut detail = parse::detail(response);
+    // Public artist and album pages also offer sign-in actions, e.g. on Subscribe.
+    let empty = detail.header.title.is_empty() && detail.sections.is_empty();
+    if empty && is_sign_in_page(response) {
+        return Err(Error::Auth("Войдите через Google, чтобы открыть эту страницу YouTube Music".into()));
     }
     let mut unavailable = false;
-    walk(&response, &mut |node| {
+    walk(response, &mut |node| {
         if node
             .get("alertRenderer")
             .is_some_and(|alert| alert.get("type").and_then(Value::as_str) == Some("ERROR"))
@@ -200,8 +229,7 @@ pub async fn browse(ytm: &Ytm, browse_id: &str) -> Result<Detail> {
     if unavailable || response.get("error").is_some() {
         return Err(Error::api("Плейлист недоступен: он удалён, закрыт или YouTube Music временно не отвечает. Проверьте доступ и повторите запрос."));
     }
-    let mut detail = parse::detail(&response);
-    if detail.header.title.is_empty() && detail.sections.is_empty() {
+    if empty {
         return Err(Error::api(
             "YouTube Music вернул пустую страницу. Повторите загрузку плейлиста.",
         ));
@@ -221,21 +249,36 @@ pub async fn browse_more(ytm: &Ytm, continuation: &str) -> Result<Section> {
     Ok(parse::continuation_page(&response))
 }
 
+pub async fn browse_releases(ytm: &Ytm, browse_id: &str, params: &str) -> Result<Section> {
+    let response = ytm
+        .request("browse", json!({ "browseId": browse_id, "params": params }))
+        .await?;
+    parse::sections(&response)
+        .into_iter()
+        .filter(|section| matches!(section.layout.as_str(), "grid" | "carousel"))
+        .find_map(|mut section| {
+            section.items.retain(|item| item.kind == "album");
+            (!section.items.is_empty()).then_some(section)
+        })
+        .ok_or_else(|| Error::api("YouTube Music не вернул список релизов."))
+}
+
 async fn library_browse(ytm: &Ytm, browse_id: &str) -> Result<Vec<Section>> {
     if !ytm.is_signed_in().await {
         return Err(Error::Auth(
-            "Sign in with Google to open your library".into(),
+            "Войдите через Google, чтобы открыть библиотеку".into(),
         ));
     }
     let response = ytm
         .request("browse", json!({ "browseId": browse_id }))
         .await?;
 
-    if is_sign_in_page(&response) {
-        return Err(Error::Auth("Sign in again to open your library".into()));
+    let shelves = parse::sections(&response);
+    if shelves.is_empty() && is_sign_in_page(&response) {
+        return Err(Error::Auth("Повторите вход в Google, чтобы открыть библиотеку".into()));
     }
 
-    Ok(parse::sections(&response))
+    Ok(shelves)
 }
 
 pub async fn library_playlists(ytm: &Ytm) -> Result<Vec<Section>> {
@@ -253,7 +296,7 @@ pub async fn library_artists(ytm: &Ytm) -> Result<Vec<Section>> {
 pub async fn liked_songs(ytm: &Ytm) -> Result<Detail> {
     if !ytm.is_signed_in().await {
         return Err(Error::Auth(
-            "Sign in with Google to open your library".into(),
+            "Войдите через Google, чтобы открыть библиотеку".into(),
         ));
     }
     browse(ytm, "VLLM").await
@@ -312,10 +355,7 @@ pub async fn account(ytm: &Ytm) -> Result<Account> {
     };
     Ok(Account {
         name: parse::text_of(header.get("accountName").unwrap_or(&Value::Null)),
-        handle: header
-            .pointer("/channelHandle/runs/0/text")
-            .and_then(Value::as_str)
-            .map(str::to_string),
+        handle: header.get("channelHandle").map(parse::text_of).filter(|handle| !handle.trim().is_empty()),
         photo: header
             .pointer("/accountPhoto/thumbnails/0/url")
             .and_then(Value::as_str)

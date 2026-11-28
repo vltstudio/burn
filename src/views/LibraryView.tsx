@@ -14,7 +14,8 @@ import type { ArchivedPlaylist, AuthStatus, Detail, LibraryTab, MediaItem, Secti
 import { favoriteToItem } from "../ui/format";
 import { Cover } from "../ui/cover";
 import { LikedPlaylistHeader } from "../components/LikedPlaylist";
-import { isSpecialLikedPlaylist, rememberSpotifyImport, useSpotifyLikedPlaylists } from "../ui/liked-playlists";
+import { isSpecialLikedPlaylist, useSpotifyLikedPlaylists } from "../ui/liked-playlists";
+import { onPlaylistChange } from "../ui/playlist-changes";
 import { LocalLibraryTab } from "./LocalLibraryTab";
 
 type Tab = LibraryTab;
@@ -54,6 +55,7 @@ interface Props {
   onOpen: (item: MediaItem) => void;
   onRequestSignIn: () => void;
   onOpenLocalSettings: () => void;
+  onCheckTransfer: (id: string) => void;
 }
 
 export function LibraryView({
@@ -62,6 +64,7 @@ export function LibraryView({
   onOpen,
   onRequestSignIn,
   onOpenLocalSettings,
+  onCheckTransfer,
 }: Props) {
   const player = usePlayback();
   const downloads = useDownloads();
@@ -94,7 +97,6 @@ export function LibraryView({
   const morePending = useRef(false);
   const [importOpen, setImportOpen] = useState(false);
   const [yandexOpen, setYandexOpen] = useState(false);
-  const importAccount = useRef<string | null>(null);
 
   const signedIn = Boolean(auth?.signedIn);
   const accountKey = signedIn ? JSON.stringify([auth?.account?.handle, auth?.account?.name]) : "";
@@ -110,10 +112,14 @@ export function LibraryView({
     ? library.spotify.detail : null;
   const activeShelves = shelves[tab];
   const loading = tab === "songs" ? !liked : tab === "spotify-favorites" ? Boolean(spotifyBrowseId) && !spotify : !activeShelves;
-  const openImport = () => {
-    importAccount.current = sourceAccount;
-    setImportOpen(true);
-  };
+  const openImport = () => setImportOpen(true);
+
+  useEffect(() => onPlaylistChange((id) => {
+    if (id === spotifyId || id === "LM") {
+      setLibrary((current) => ({ ...current, ...(id === "LM" ? { liked: null } : { spotify: null }) }));
+      setReloadKey((key) => key + 1);
+    }
+  }), [spotifyId]);
 
   useEffect(() => {
     ++moreGeneration.current;
@@ -240,7 +246,7 @@ export function LibraryView({
       const items = favorites.map((favorite) => {
         const item = favoriteToItem(favorite);
         return hasDownloadedCover(item.videoId)
-          ? { ...item, thumbs: [downloadCoverUrl(item.videoId!)] }
+          ? { ...item, thumbs: [downloadCoverUrl(item.videoId!), ...item.thumbs] }
           : item;
       });
       const remoteId = favoriteSync.playlistId?.replace(/^VL/, "");
@@ -401,7 +407,7 @@ export function LibraryView({
       const spotifySource = tab === "spotify-favorites";
       return (
         <>
-          <LikedPlaylistHeader variant={spotifySource ? "spotify" : "youtube"} items={likedTracks} hasMore={Boolean(continuation)} />
+          <LikedPlaylistHeader variant={spotifySource ? "spotify" : "youtube"} items={likedTracks} hasMore={Boolean(continuation)} playlistId={spotifySource ? spotifyId : "LM"} />
           {likedTracks.length === 0 && !continuation ? (
             <div className="empty">
               <div className="empty-title">{spotifySource ? spotifyBrowseId ? "В плейлисте пока нет треков" : "Любимые треки Spotify ещё не импортированы" : "Пока нет понравившихся треков"}</div>
@@ -484,8 +490,8 @@ export function LibraryView({
       <SpotifyImportDialog
         open={importOpen}
         onClose={() => setImportOpen(false)}
-        onImported={(result, likedImport) => {
-          if (result && typeof likedImport === "boolean") rememberSpotifyImport(importAccount.current, result.playlistId, likedImport);
+        onCheckTransfer={(id) => { setImportOpen(false); onCheckTransfer(id); }}
+        onImported={() => {
           void refreshPlaylists();
           setLibrary((current) => ({ ...current, shelves: {}, liked: null, spotify: null }));
           setReloadKey((key) => key + 1);

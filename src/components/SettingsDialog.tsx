@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open as openFolderDialog } from "@tauri-apps/plugin-dialog";
 import { getVersion } from "@tauri-apps/api/app";
-import { Check, FolderOpen, Globe2, MessagesSquare, Palette, Plus, RefreshCw, SlidersHorizontal, UserRound, Volume2, VolumeX, X } from "lucide-react";
+import { Check, FolderOpen, Globe2, ListMusic, MessagesSquare, Palette, Plus, RefreshCw, SlidersHorizontal, UserRound, Volume2, VolumeX, X } from "lucide-react";
 import { api, ApiFailure } from "../api";
 import { usePlayer } from "../player";
 import { applyPalette, PALETTES, paletteOf } from "../theme";
@@ -10,11 +10,13 @@ import type { AuthStatus, LocalStatus, Settings } from "../types";
 import { SettingSection } from "./SettingSection";
 import { UpdateSettings } from "./UpdateSettings";
 import { DiscordSettings } from "./DiscordSettings";
+import { SpotifySyncSettings } from "./SpotifySyncSettings";
 import type { useDiscordPresence } from "../discord-presence";
 
 interface Props {
   open: boolean;
   initialTab: SettingsTab;
+  transferTarget?: string;
   auth: AuthStatus | null;
   onClose: () => void;
   onAuthChanged: (status?: AuthStatus) => void;
@@ -36,6 +38,7 @@ const LANGUAGES: Array<{ value: string; label: string }> = [
 
 const SETTINGS_TABS = [
   { id: "account", label: "Аккаунт", icon: UserRound },
+  { id: "spotify", label: "Spotify", icon: ListMusic },
   { id: "appearance", label: "Оформление", icon: Palette },
   { id: "local", label: "Локальная музыка", icon: FolderOpen },
   { id: "playback", label: "Воспроизведение", icon: SlidersHorizontal },
@@ -75,7 +78,7 @@ function PlaybackSettings() {
   );
 }
 
-export function SettingsDialog({ open, initialTab, auth, onClose, onAuthChanged, onToast, discord }: Props) {
+export function SettingsDialog({ open, initialTab, transferTarget, auth, onClose, onAuthChanged, onToast, discord }: Props) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [tab, setTab] = useState<SettingsTab>(initialTab);
   const [pending, setPending] = useState(false);
@@ -84,6 +87,7 @@ export function SettingsDialog({ open, initialTab, auth, onClose, onAuthChanged,
   const authOperation = useRef(0);
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
+  const [checking, setChecking] = useState(false);
   const [settings, setSettings] = useState<Settings>({ language: null, palette: null });
   const [language, setLanguage] = useState("ru");
   const [palette, setPalette] = useState(paletteOf(null).id);
@@ -211,7 +215,26 @@ export function SettingsDialog({ open, initialTab, auth, onClose, onAuthChanged,
   const cancelAuth = async () => {
     ++authOperation.current;
     setPending(false);
-    await api.authCancel().catch(() => undefined);
+    setBusy(true);
+    try { await api.authCancel(); }
+    catch (error) { setFailure(error instanceof Error ? error.message : String(error)); }
+    finally { setBusy(false); }
+  };
+
+  const verifyAuth = async () => {
+    const operation = ++authOperation.current;
+    setChecking(true);
+    setFailure(null);
+    try {
+      const result = await api.authStatus(true);
+      if (operation !== authOperation.current) return;
+      onAuthChanged(result);
+      onToast(result.signedIn ? "YouTube Music подтвердил вход" : "Сохранённого входа нет");
+    } catch (error) {
+      if (operation !== authOperation.current) return;
+      if (error instanceof ApiFailure && error.needsAuth) onAuthChanged({ signedIn: false, account: null });
+      setFailure(error instanceof Error ? error.message : String(error));
+    } finally { setChecking(false); }
   };
 
   const signOut = async () => {
@@ -231,8 +254,6 @@ export function SettingsDialog({ open, initialTab, auth, onClose, onAuthChanged,
     }
   };
 
-  // Clears the stored session and every cookie in the webview profile: the one
-  // way out when Google keeps half-answering a sign-in.
   const resetAuth = async () => {
     ++authOperation.current;
     setPending(false);
@@ -362,6 +383,9 @@ export function SettingsDialog({ open, initialTab, auth, onClose, onAuthChanged,
         <div className="dialog-body" key={tab}>
           {tab === "account" ? (
             <SettingSection title="Аккаунт Google">
+              {!pending && <button className="ghost-button verify-account" onClick={() => void verifyAuth()} disabled={checking || busy}>
+                <RefreshCw size={14} /> {checking ? "Проверяем вход…" : "Проверить подключение"}
+              </button>}
               {auth?.signedIn ? (
                 <div className="field-group">
                   <div className="settings-account">
@@ -494,6 +518,8 @@ export function SettingsDialog({ open, initialTab, auth, onClose, onAuthChanged,
               </div>
             </SettingSection>
           ) : null}
+          {tab === "spotify" && <SpotifySyncSettings key={auth?.account?.handle ?? auth?.account?.name ?? ""}
+            initialTarget={transferTarget} signedIn={Boolean(auth?.signedIn)} onGoogleSignIn={() => setTab("account")} />}
           {tab === "appearance" ? (
             <SettingSection title="Оформление">
               <p className="field-hint">

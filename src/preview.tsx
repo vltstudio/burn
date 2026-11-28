@@ -6,6 +6,7 @@ import artist from "./preview/fixtures/artist.json";
 import home from "./preview/fixtures/home.json";
 import playlist from "./preview/fixtures/playlist.json";
 import search from "./preview/fixtures/search.json";
+import type { Favorite } from "./types";
 
 const details: Record<string, unknown> = {
   MPREb_99mXCzrVmLg: album,
@@ -24,8 +25,11 @@ const sidePlaylists = {
     { kind: "playlist", title: "Nostalgia", browseId: "VLPLdEiuPxBVWSjsUaOc08SAf9vMpYkeXvo5", playlistId: "PLdEiuPxBVWSjsUaOc08SAf9vMpYkeXvo5" },
     { kind: "playlist", title: "Calm", browseId: "VLPLdEiuPxBVWSjsUaOc08SAf9vMpYkeXvo5", playlistId: "PLdEiuPxBVWSjsUaOc08SAf9vMpYkeXvo5" },
     { kind: "playlist", title: "Archive", browseId: "VLPLdEiuPxBVWSjsUaOc08SAf9vMpYkeXvo5", playlistId: "PLdEiuPxBVWSjsUaOc08SAf9vMpYkeXvo5" },
-  ].map((item) => ({
+  ].map((item, i) => ({
     ...item,
+    title: i ? item.title : playlist.header.title,
+    playlistId: i ? `PLpreview${i}` : item.playlistId,
+    browseId: i ? `VLPLpreview${i}` : item.browseId,
     subtitle: "",
     videoId: null,
     duration: null,
@@ -35,6 +39,18 @@ const sidePlaylists = {
     album: null,
   })),
 };
+
+const favorites = new Map<string, Favorite>();
+const rows = playlist.sections.flatMap((section) => section.items);
+const demoLists = new Map(sidePlaylists.items.map((item) => [item.playlistId, rows.slice(0, -1)]));
+let spotifyConnected = true;
+const previewDetail = (id: string) => ({
+  ...playlist,
+  header: { ...playlist.header, playlistId: id, browseId: `VL${id}`,
+    title: sidePlaylists.items.find((item) => item.playlistId === id)?.title ?? playlist.header.title,
+    description: `${playlist.header.description}\nИмпортировано из Spotify: https://open.spotify.com/playlist/37i9dQZF1DX4UtSsGT1Sbe` },
+  sections: [{ ...playlist.sections[0], items: demoLists.get(id) ?? rows }],
+});
 
 const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   search: ({ filter }) =>
@@ -47,14 +63,30 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   search_more: () => ({ title: null, layout: "list", items: [], continuation: null }),
   suggestions: () => ["nirvana unplugged", "nirvana come as you are", "nirvana heart shaped box"],
   home: () => home,
-  browse: (args) => details[String(args.browseId)] ?? album,
+  browse: ({ browseId }) => {
+    const id = String(browseId).replace(/^VL/, "");
+    return demoLists.has(id) ? previewDetail(id) : details[String(browseId)] ?? album;
+  },
   browse_more: () => ({ title: null, layout: "list", items: [], continuation: null }),
   library_playlists: () => [sidePlaylists],
   library_albums: () => [sidePlaylists],
   library_artists: () => [sidePlaylists],
   liked_songs: () => playlist,
-  favorites_list: () => [],
-  favorites_sync: () => ({ favorites: [], playlistId: "PLpreviewfavorites", uploaded: 0, downloaded: 0, removed: 0 }),
+  playlist_tracks: ({ playlistId }) => demoLists.get(String(playlistId)) ?? rows,
+  favorites_list: () => [...favorites.values()],
+  favorites_add: ({ items }) => (items as Favorite[]).filter((entry) => {
+    if (favorites.has(entry.id)) return false;
+    favorites.set(entry.id, entry);
+    return true;
+  }),
+  favorite_toggle: ({ favorite }) => {
+    const entry = favorite as Favorite;
+    if (favorites.delete(entry.id)) return false;
+    favorites.set(entry.id, entry);
+    return true;
+  },
+  favorites_sync: () => ({ favorites: [...favorites.values()], playlistId: "PLpreviewfavorites", uploaded: 0, downloaded: 0, removed: 0 }),
+  archive_state: () => ({ archived: [], hasCover: false }),
   favorites_sync_playlist: () => "PLpreviewfavorites",
   local_status: () => ({ roots: [], total: 0, generation: 0 }),
   local_search: () => ({ items: [], total: 0, libraryTotal: 0, generation: 0 }),
@@ -79,9 +111,18 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   }),
   add_to_playlist: () => null,
   create_playlist: () => "PLpreviewplaylist",
-  spotify_status: () => ({ signedIn: true }),
-  spotify_sign_in: () => ({ signedIn: true }),
-  spotify_sign_out: () => ({ signedIn: false }),
+  spotify_status: () => ({ signedIn: spotifyConnected }),
+  spotify_sign_in: () => ({ signedIn: (spotifyConnected = true) }),
+  spotify_sign_out: () => ({ signedIn: (spotifyConnected = false) }),
+  spotify_sync: ({ playlistId, repair }) => {
+    const target = String(playlistId);
+    const existing = demoLists.get(target) ?? [];
+    const missing = rows.filter((item) => !existing.some((entry) => entry.videoId === item.videoId));
+    if (repair) demoLists.set(target, [...existing, ...missing]);
+    return { total: rows.length, present: repair ? rows.length : rows.length - missing.length,
+      added: repair ? missing.length : 0, repeats: 0, unmatched: [],
+      missing: repair ? [] : missing.map((item) => ({ title: item.title, artists: item.artists.map((artist) => artist.name) })) };
+  },
   spotify_preview: () => ({
     id: "37i9dQZF1DX4UtSsGT1Sbe",
     name: "All Out 80s",

@@ -15,6 +15,7 @@ export function QuickPlayerBridge() {
   const publish = () => {
     const { player: p, favorite } = controls.current;
     const state: QuickState = {
+      palette: document.documentElement.dataset.palette,
       current: p.current, playing: p.playing, loading: p.loading, progress: p.progress, duration: p.duration,
       volume: p.volume, muted: p.muted, shuffle: p.shuffle, repeat: p.repeat, favorite,
     };

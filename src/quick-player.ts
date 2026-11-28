@@ -14,6 +14,7 @@ export interface QuickPlacement {
 }
 
 export interface QuickState {
+  palette?: string;
   current: MediaItem | null;
   playing: boolean;
   loading: boolean;

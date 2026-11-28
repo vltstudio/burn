@@ -4,7 +4,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { usePlayer } from "./player";
 import type { DiscordActivity, DiscordPreferences, DiscordPresenceStatus, MediaItem } from "./types";
-import { bigThumb } from "./ui/format";
 
 export function useDiscordPresence() {
   const supported = isTauri() && !/Android|iPhone|iPad/i.test(navigator.userAgent)
@@ -47,6 +46,8 @@ export function useDiscordPresence() {
 }
 
 const absolutePath = /^(?:[/\\]|[a-z]:[/\\]|file:)/i;
+const albumImage = /^https:\/\/(?:(?:yt3|lh3)\.googleusercontent\.com|yt3\.ggpht\.com)\/(?:ytc\/)?[\w=-]+(?:[?#].*)?$/i;
+const videoImage = /^https:\/\/(?:i[1-4]?\.ytimg\.com|img\.youtube\.com)\/vi(?:_webp)?\/[\w-]{11}\/[\w.-]+\.(?:jpg|webp)(?:[?#].*)?$/i;
 
 export function discordTrackActivity(item: MediaItem, position: number, duration: number, shareLocal: boolean, now: number): DiscordActivity | null {
   const local = item.source === "local" || Boolean(item.localPath);
@@ -63,9 +64,12 @@ export function discordTrackActivity(item: MediaItem, position: number, duration
   const elapsed = Number.isFinite(position) ? Math.max(0, Math.round(position * 1000)) : 0;
   const startMs = Math.max(0, now - (total === null ? elapsed : Math.min(total, elapsed)));
   const videoId = item.videoId;
-  const coverUrl = local ? null : bigThumb(item)
+  const publicCover = [...item.thumbs].reverse().find((url) => url.length <= 2048 && (albumImage.test(url) || videoImage.test(url)));
+  const coverUrl = local ? null : publicCover
     || (videoId && /^[\w-]{11}$/.test(videoId) ? `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg` : null);
-  return { title, artist: [...new Set(names)].join(", ") || fallback || null, coverUrl, startMs, endMs: total === null ? null : startMs + total, local };
+  return { title, artist: [...new Set(names)].join(", ") || fallback || null, coverUrl,
+    ...(!local && videoId && /^[\w-]{11}$/.test(videoId) ? { videoId } : {}),
+    startMs, endMs: total === null ? null : startMs + total, local };
 }
 
 type Snapshot = { index: number; track: string | null; activity: DiscordActivity };
@@ -83,17 +87,31 @@ export function DiscordPresenceBridge({ shareLocal }: { shareLocal: boolean }) {
   const { current, index, playing, loading, progress, duration, clipPlayback } = usePlayer();
   const active = clipPlayback?.playing ?? (playing && !loading);
   const total = clipPlayback?.duration ?? duration;
-  const sent = useRef<Snapshot | null>(null);
+  const sent = useRef<Snapshot | null | undefined>(null);
+  const [retryCount, setRetryCount] = useState(0);
+  const retryTimer = useRef<number | undefined>(undefined);
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; window.clearTimeout(retryTimer.current); };
+  }, []);
 
   useEffect(() => {
     const activity = current && active
       ? discordTrackActivity(current, progress, total, shareLocal, Date.now())
       : null;
     const next = activity ? { index, track: current?.videoId ?? null, activity } : null;
-    if (sameDiscordTrack(sent.current, next)) return;
+    if (sent.current !== undefined && sameDiscordTrack(sent.current, next)) return;
+    window.clearTimeout(retryTimer.current);
     sent.current = next;
-    void api.discordPresenceSync(activity).catch(() => undefined);
-  }, [current, index, active, progress, total, shareLocal]);
+    void api.discordPresenceSync(activity).catch(() => {
+      if (!mounted.current || sent.current !== next) return;
+      retryTimer.current = window.setTimeout(() => {
+        sent.current = undefined;
+        setRetryCount((value) => value + 1);
+      }, 2000);
+    });
+  }, [current, index, active, progress, total, shareLocal, retryCount]);
 
   return null;
 }

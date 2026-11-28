@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { usePlayer, type ClipAudioHandoff } from "../player";
+import { isAndroid } from "../platform";
 import type { MediaItem } from "../types";
 import { TrackCover } from "../ui/cover";
 import { ArtistNames } from "../ui/artist-links";
@@ -65,9 +66,11 @@ export function FullPlayer({ current, onClose }: { current: MediaItem; onClose: 
         return;
       }
     };
-    void sync();
-    window.addEventListener("resize", sync);
-    document.addEventListener("fullscreenchange", sync);
+    if (!isAndroid) {
+      void sync();
+      window.addEventListener("resize", sync);
+      document.addEventListener("fullscreenchange", sync);
+    }
     return () => {
       session.mounted = false;
       window.removeEventListener("resize", sync);
@@ -167,7 +170,7 @@ export function FullPlayer({ current, onClose }: { current: MediaItem; onClose: 
                 <Video size={18} /> <span>Клип</span>
               </button>
             ) : null}
-            {isTauri() || document.fullscreenEnabled ? (
+            {!isAndroid && (isTauri() || document.fullscreenEnabled) ? (
               <button
                 className={`fp-queue-toggle fp-fullscreen-toggle ${fullscreen ? "active" : ""}`}
                 aria-label={fullscreenTitle}
@@ -182,7 +185,7 @@ export function FullPlayer({ current, onClose }: { current: MediaItem; onClose: 
 
         {clipSession && clipId ? (
           <div className="fp-stage fp-stage--clip">
-            <ClipMode videoId={clipId} title={current.title} kind={current.kind} audio={clipSession.audio} onClose={closeClip} />
+            <ClipMode videoId={clipId} title={current.title} kind={current.kind} track={current} audio={clipSession.audio} onClose={closeClip} />
           </div>
         ) : (
         <div className={`fp-stage ${pane !== "meta" ? "fp-stage--split" : ""}`}>
@@ -195,6 +198,7 @@ export function FullPlayer({ current, onClose }: { current: MediaItem; onClose: 
               <p className="fp-sub" title={current.subtitle}>
                 <ArtistNames artists={current.artists} fallback={current.subtitle} onNavigate={close} />
               </p>
+              {player.openOfficialPlayer && <button className="ghost-button" onClick={player.openOfficialPlayer}>Открыть в YouTube Music</button>}
             </div>
           </div>
           {pane === "queue" ? <QueuePane queue={queue} index={index} onJump={player.jumpTo} /> : null}

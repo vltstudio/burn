@@ -441,6 +441,21 @@ impl LocalLibrary {
         Ok(added)
     }
 
+    pub fn add_favorites(&self, items: Vec<Favorite>) -> Result<Vec<Favorite>> {
+        let mut store = self.store.write().map_err(|_| Error::io("local store is locked"))?;
+        let mut known: std::collections::BTreeSet<String> = store.favorites.iter().map(|item| item.id.clone()).collect();
+        let added: Vec<_> = items.into_iter()
+            .filter(|item| youtube_favorite_id(item).is_some() && known.insert(item.id.clone()))
+            .collect();
+        if !added.is_empty() {
+            let mut candidate = store.clone();
+            candidate.favorites.splice(0..0, added.iter().cloned());
+            self.write_store(&candidate)?;
+            *store = candidate;
+        }
+        Ok(added)
+    }
+
     pub fn favorites_account(&self) -> Result<Option<String>> {
         Ok(self
             .store
@@ -1222,6 +1237,20 @@ mod archive_tests {
             title: id.into(),
             ..Favorite::default()
         }
+    }
+
+    #[test]
+    fn bulk_favorites_keep_existing_likes_and_ignore_repeated_or_invalid_rows() {
+        let (library, root) = temp_library("bulk-favorites");
+        library.toggle_favorite(favorite("AAAAAAAAAAA")).unwrap();
+        let batch = vec![favorite("BBBBBBBBBBB"), favorite("AAAAAAAAAAA"), favorite("BBBBBBBBBBB"),
+            favorite("invalid"), favorite("CCCCCCCCCCC")];
+        let added = library.add_favorites(batch.clone()).unwrap();
+        assert_eq!(added.len(), 2);
+        assert!(library.add_favorites(batch).unwrap().is_empty());
+        assert_eq!(library.favorites().iter().map(|item| item.title.as_str()).collect::<Vec<_>>(),
+            ["BBBBBBBBBBB", "CCCCCCCCCCC", "AAAAAAAAAAA"]);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

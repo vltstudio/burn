@@ -21,6 +21,8 @@ pub enum ResolveError {
     InvalidId,
     Network,
     Unavailable,
+    SignInRequired,
+    Playability(String),
     NoAudio,
 }
 
@@ -30,6 +32,8 @@ impl fmt::Display for ResolveError {
             Self::InvalidId => "Некорректный идентификатор трека YouTube.",
             Self::Network => "Не удалось получить ответ от YouTube. Проверьте подключение.",
             Self::Unavailable => "YouTube не разрешил воспроизвести этот трек.",
+            Self::SignInRequired => "YouTube просит подтвердить вход. Откройте трек в плеере YouTube Music.",
+            Self::Playability(reason) => return write!(f, "YouTube: {reason}"),
             Self::NoAudio => "YouTube не предоставил совместимый аудиопоток для этого трека.",
         })
     }
@@ -42,10 +46,16 @@ struct Cached<T> {
     until: Instant,
 }
 
+#[derive(Default)]
+struct StreamCache {
+    generation: u64,
+    urls: HashMap<String, Cached<Url>>,
+}
+
 pub struct AudioResolver {
     http: Client,
     visitor: Mutex<Option<Cached<String>>>,
-    streams: Mutex<HashMap<String, Cached<Url>>>,
+    streams: Mutex<StreamCache>,
 }
 
 impl AudioResolver {
@@ -53,15 +63,19 @@ impl AudioResolver {
         Self {
             http,
             visitor: Mutex::new(None),
-            streams: Mutex::new(HashMap::new()),
+            streams: Mutex::new(StreamCache::default()),
         }
     }
 
-    pub async fn invalidate(&self, video_id: &str) {
-        self.streams.lock().await.remove(video_id);
+    pub async fn resolve(&self, video_id: &str) -> Result<Url, ResolveError> {
+        self.resolve_inner(video_id, false).await
     }
 
-    pub async fn resolve(&self, video_id: &str) -> Result<Url, ResolveError> {
+    pub async fn resolve_fresh(&self, video_id: &str) -> Result<Url, ResolveError> {
+        self.resolve_inner(video_id, true).await
+    }
+
+    async fn resolve_inner(&self, video_id: &str, refresh: bool) -> Result<Url, ResolveError> {
         if video_id.len() != 11
             || !video_id
                 .bytes()
@@ -70,13 +84,23 @@ impl AudioResolver {
             return Err(ResolveError::InvalidId);
         }
 
-        if let Some(cached) = self.streams.lock().await.get(video_id) {
-            if cached.until > Instant::now() {
+        let generation = {
+            let mut streams = self.streams.lock().await;
+            if refresh {
+                // YouTube can bind signed URLs to the outgoing IP address.
+                streams.generation += 1;
+                streams.urls.clear();
+            } else if let Some(cached) = streams
+                .urls
+                .get(video_id)
+                .filter(|entry| entry.until > Instant::now())
+            {
                 return Ok(cached.value.clone());
             }
-        }
+            streams.generation
+        };
 
-        let visitor = self.visitor_id().await?;
+        let visitor = self.visitor_id(refresh).await?;
         let response = self
             .http
             .post(format!("{ORIGIN}/youtubei/v1/player?prettyPrint=false"))
@@ -117,6 +141,10 @@ impl AudioResolver {
 
         let (url, ttl) = select_audio(response, SystemTime::now())?;
         let mut streams = self.streams.lock().await;
+        if streams.generation != generation {
+            return Ok(url);
+        }
+        let streams = &mut streams.urls;
         let now = Instant::now();
         streams.retain(|_, stream| stream.until > now);
         if streams.len() >= CACHE_SIZE && !streams.contains_key(video_id) {
@@ -138,8 +166,11 @@ impl AudioResolver {
         Ok(url)
     }
 
-    async fn visitor_id(&self) -> Result<String, ResolveError> {
+    async fn visitor_id(&self, refresh: bool) -> Result<String, ResolveError> {
         let mut visitor = self.visitor.lock().await;
+        if refresh {
+            *visitor = None;
+        }
         if let Some(cached) = visitor
             .as_ref()
             .filter(|entry| entry.until > Instant::now())
@@ -194,6 +225,7 @@ struct PlayerResponse {
 #[derive(Deserialize)]
 struct Playability {
     status: String,
+    reason: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -217,7 +249,14 @@ fn select_audio(
     now: SystemTime,
 ) -> Result<(Url, Duration), ResolveError> {
     if response.playability_status.status != "OK" {
-        return Err(ResolveError::Unavailable);
+        let reason = response.playability_status.reason.unwrap_or_default();
+        let reason = reason.split_whitespace().collect::<Vec<_>>().join(" ");
+        if response.playability_status.status == "LOGIN_REQUIRED" && (reason.is_empty() || reason.to_lowercase().contains("sign in")) {
+            return Err(ResolveError::SignInRequired);
+        }
+        return Err(if reason.is_empty() { ResolveError::Unavailable } else {
+            ResolveError::Playability(reason.chars().take(240).collect())
+        });
     }
     response
         .streaming_data
@@ -324,8 +363,17 @@ mod tests {
         );
         assert_eq!(
             select_audio(response, UNIX_EPOCH),
-            Err(ResolveError::Unavailable)
+            Err(ResolveError::SignInRequired)
         );
+    }
+
+    #[test]
+    fn keeps_a_region_restriction_visible() {
+        let response = serde_json::from_value(json!({"playabilityStatus":{
+            "status":"UNPLAYABLE","reason":"This video is unavailable in your country."
+        }})).unwrap();
+        let error = select_audio(response, UNIX_EPOCH).unwrap_err();
+        assert!(error.to_string().contains("unavailable in your country"));
     }
 
     #[tokio::test]

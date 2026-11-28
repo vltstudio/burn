@@ -1,6 +1,6 @@
 [package]
 name = "ytmusicdt"
-version = "0.1.5"
+version = "0.1.6"
 description = "YouTube Music desktop client"
 authors = ["Nikolay Pantseleev"]
 edition = "2021"

@@ -6,7 +6,7 @@ export interface ToastItem {
 
 export function Toasts({ items }: { items: ToastItem[] }) {
   return (
-    <div className="toasts">
+    <div className="toasts" role="status" aria-live="polite">
       {items.map((toast) => (
         <div key={toast.id} className={`toast ${toast.kind}`}>
           {toast.message}

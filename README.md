@@ -39,6 +39,18 @@ npm ci
 npm run tauri dev
 ```
 
+### Тестовая сборка Android
+
+Установите через Android Studio SDK Platform 37.0, Platform-Tools, Build-Tools, Command-line Tools и NDK. Задайте `JAVA_HOME` (подойдёт JDK 21 из Android Studio), `ANDROID_HOME` и `NDK_HOME`. На Windows обычная команда Tauri требует включённого режима разработчика, чтобы создать символические ссылки на нативные библиотеки.
+
+```sh
+npm ci
+rustup target add aarch64-linux-android
+npm run tauri -- android build --debug --apk --target aarch64
+```
+
+APK находится в `src-tauri/gen/android/app/build/outputs/apk/`. Для эмулятора x86-64 установите таргет `x86_64-linux-android` и передайте `--target x86_64`. В этой тестовой версии автообновления для десктопа отключены на Android.
+
 Проверки без запросов к личным аккаунтам:
 
 ```sh

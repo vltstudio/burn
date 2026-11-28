@@ -1,15 +1,17 @@
-import { ArrowLeft, Heart, Play, Shuffle } from "lucide-react";
+import { ArrowLeft, Heart } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiFailure } from "../api";
 import { useBackdrop } from "../backdrop";
 import { LiquidWaveSpinner } from "../components/ui/liquid-spinner";
+import { PlaylistActions } from "../components/PlaylistActions";
 import { Shelf } from "../components/Shelf";
 import { useLibrary } from "../library";
 import { usePlayback } from "../player";
-import type { Detail, ItemKind, MediaItem } from "../types";
+import type { Detail, ItemKind, MediaItem, Section } from "../types";
 import { Cover } from "../ui/cover";
 import { favoriteKey, kindLabels } from "../ui/format";
 import { ArtistNames } from "../ui/artist-links";
+import { onPlaylistChange } from "../ui/playlist-changes";
 import { LikedPlaylistCover } from "../components/LikedPlaylist";
 
 interface Props {
@@ -30,6 +32,10 @@ export function DetailView({ browseId, fallbackTitle, onOpen, onBack }: Props) {
   const [reloadKey, setReloadKey] = useState(0);
   const requestRef = useRef(0);
   const moreRequests = useRef(new Set<number>());
+
+  useEffect(() => onPlaylistChange((id) => {
+    if (browseId === id || browseId === `VL${id}`) setReloadKey((key) => key + 1);
+  }), [browseId]);
 
   useEffect(() => {
     const token = ++requestRef.current;
@@ -71,25 +77,33 @@ export function DetailView({ browseId, fallbackTitle, onOpen, onBack }: Props) {
       : section);
   }, [detail]);
 
-  const loadMore = useCallback(async (index: number, continuation: string) => {
-    if (!continuation || moreRequests.current.has(index)) return;
+  const loadMore = useCallback(async (index: number, { continuation, moreEndpoint }: Section) => {
+    if ((!continuation && !moreEndpoint) || moreRequests.current.has(index)) return;
     const token = requestRef.current;
     moreRequests.current.add(index);
     setLoadingMore(new Set(moreRequests.current));
     setMoreErrors((current) => ({ ...current, [index]: null }));
     try {
-      const page = await api.browseMore(continuation);
+      const page = moreEndpoint
+        ? await api.browseReleases(moreEndpoint.browseId, moreEndpoint.params)
+        : continuation ? await api.browseMore(continuation) : null;
+      if (!page) return;
       if (requestRef.current !== token) return;
+      const releaseIds = new Set(page.items.map((item) => item.browseId));
       setDetail((current) =>
         current
           ? {
               ...current,
               sections: current.sections.map((section, sectionIndex) =>
-                sectionIndex === index && section.continuation === continuation
+                sectionIndex === index && section.continuation === continuation && section.moreEndpoint === moreEndpoint
                   ? {
                       ...section,
-                      items: [...section.items, ...page.items],
+                      layout: moreEndpoint ? "grid" : section.layout,
+                      items: moreEndpoint
+                        ? [...page.items, ...section.items.filter((item) => !releaseIds.has(item.browseId))]
+                        : [...section.items, ...page.items],
                       continuation: page.continuation,
+                      moreEndpoint: undefined,
                     }
                   : section,
               ),
@@ -188,27 +202,9 @@ export function DetailView({ browseId, fallbackTitle, onOpen, onBack }: Props) {
             ) : null}
           </div>
 
-          <div className="hero-actions">
-            <button
-              className="solid-button"
-              disabled={firstTracks.length === 0}
-              onClick={() => player.playItems(firstTracks, 0)}
-            >
-              <Play size={13} fill="currentColor" /> Слушать
-            </button>
-            <button
-              className="round-button"
-              disabled={firstTracks.length === 0}
-              title="Перемешать"
-              aria-label="Перемешать"
-              onClick={() => {
-                const shuffled = [...firstTracks].sort(() => Math.random() - 0.5);
-                player.playItems(shuffled, 0);
-              }}
-            >
-              <Shuffle size={15} strokeWidth={1.7} />
-            </button>
-            {heroItem ? (
+          <PlaylistActions items={firstTracks} playlistId={kind === "playlist" ? header.playlistId ?? browseId : null}
+            hasMore={sections.some((section) => section.layout === "list" && section.continuation)}>
+            {heroItem && kind !== "playlist" ? (
               <button
                 className={`round-button ${heroLiked ? "active" : ""}`}
                 title={heroLiked ? "Убрать из избранного" : "В избранное"}
@@ -219,14 +215,14 @@ export function DetailView({ browseId, fallbackTitle, onOpen, onBack }: Props) {
                 <Heart size={14} strokeWidth={1.8} fill={heroLiked ? "currentColor" : "none"} />
               </button>
             ) : null}
-          </div>
+          </PlaylistActions>
         </div>
       </div>
 
       {header.description ? <p className="hero-description">{header.description}</p> : null}
 
       {sections.map((section, index) => {
-        if (section.items.length === 0 && !section.continuation) return null;
+        if (section.items.length === 0 && !section.moreEndpoint && !section.continuation) return null;
         return (
           <section className="block" key={`${section.title ?? "section"}-${index}`}>
             {section.title ? (
@@ -243,8 +239,8 @@ export function DetailView({ browseId, fallbackTitle, onOpen, onBack }: Props) {
               onOpen={onOpen}
               showAlbum={showAlbumColumn}
               onLoadMore={
-                section.continuation
-                  ? () => void loadMore(index, section.continuation ?? "")
+                section.moreEndpoint || section.continuation
+                  ? () => void loadMore(index, section)
                   : undefined
               }
               loadingMore={loadingMore.has(index)}

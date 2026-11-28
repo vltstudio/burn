@@ -102,9 +102,10 @@ export function TopBar({ auth, query, onSubmit, onOpenSettings, onNavigate }: Pr
         <BorderBeam
           className="search-beam"
           size="line"
-          colorVariant="colorful"
+          colorVariant="mono"
+          staticColors
           duration={3.1}
-          borderRadius={17}
+          borderRadius={9}
           active={hoveringField || fieldFocused}
         >
           <div
@@ -124,6 +125,7 @@ export function TopBar({ auth, query, onSubmit, onOpenSettings, onNavigate }: Pr
             <input
               ref={inputRef}
               value={text}
+              enterKeyHint="search"
               spellCheck={false}
               placeholder="Поиск"
               autoComplete="off"
@@ -168,6 +170,7 @@ export function TopBar({ auth, query, onSubmit, onOpenSettings, onNavigate }: Pr
                 }
               }}
             />
+            <kbd className="search-shortcut" aria-hidden="true">Ctrl K</kbd>
           </div>
         </BorderBeam>
 

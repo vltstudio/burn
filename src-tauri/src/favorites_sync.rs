@@ -443,31 +443,80 @@ async fn read_playlist(ytm: &Ytm, id: &str) -> Result<RemotePlaylist> {
     read_playlist_from(ytm, id, response).await
 }
 
-async fn read_playlist_from(ytm: &Ytm, id: &str, mut response: Value) -> Result<RemotePlaylist> {
+async fn read_playlist_from(ytm: &Ytm, id: &str, response: Value) -> Result<RemotePlaylist> {
     if !is_owned(&response) {
         return Err(Error::api("Плейлист избранного не подтверждён: нужны своё имя, метка приложения и право редактирования. Изменения не выполнялись."));
     }
+    let tracks = read_track_pages(ytm, response, true).await?
+        .into_iter().map(PlaylistEntry::into_remote).collect::<Result<_>>()?;
+    Ok(RemotePlaylist { id: id.to_owned(), tracks })
+}
+
+struct PlaylistEntry {
+    item: parse::MediaItem,
+    stored_video_id: Option<String>,
+    set_video_id: Option<String>,
+}
+
+impl PlaylistEntry {
+    fn member(mut self) -> parse::MediaItem {
+        if self.item.video_id.is_none() { self.item.video_id = self.stored_video_id; }
+        self.item
+    }
+
+    fn into_remote(mut self) -> Result<RemoteTrack> {
+        let set_video_id = self.set_video_id.take();
+        let item = self.member();
+        let video_id = item.video_id.as_deref().filter(|id| parse::valid_video_id(id))
+            .ok_or_else(|| Error::api("В плейлисте избранного есть недоступный трек. Локальная копия не изменена."))?;
+        Ok(RemoteTrack {
+            favorite: Favorite {
+                id: format!("yt:{video_id}"),
+                source: "yt".into(),
+                video_id: item.video_id,
+                title: item.title,
+                subtitle: if item.artists.is_empty() { item.subtitle } else {
+                    item.artists.iter().map(|credit| credit.name.as_str()).collect::<Vec<_>>().join(", ")
+                },
+                duration: item.duration.as_deref().and_then(duration_seconds),
+                local_path: None,
+                thumb: item.thumbs.last().cloned(),
+            },
+            set_video_id,
+        })
+    }
+}
+
+async fn playlist_entries(ytm: &Ytm, playlist_id: &str) -> Result<Vec<PlaylistEntry>> {
+    let id = playlist_id.strip_prefix("VL").unwrap_or(playlist_id);
+    if id.is_empty() || id.len() > 160 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_')) {
+        return Err(Error::api("Некорректный идентификатор плейлиста"));
+    }
+    let response = ytm.request("browse", json!({"browseId": format!("VL{id}")})).await?;
+    read_track_pages(ytm, response, false).await
+}
+
+pub(crate) async fn playlist_items(ytm: &Ytm, playlist_id: &str) -> Result<Vec<parse::MediaItem>> {
+    Ok(playlist_entries(ytm, playlist_id).await?.into_iter().map(|row| row.item).collect())
+}
+
+pub(crate) async fn playlist_members(ytm: &Ytm, playlist_id: &str) -> Result<Vec<parse::MediaItem>> {
+    Ok(playlist_entries(ytm, playlist_id).await?.into_iter().map(PlaylistEntry::member).collect())
+}
+
+async fn read_track_pages(ytm: &Ytm, mut response: Value, strict: bool) -> Result<Vec<PlaylistEntry>> {
     let mut tracks = Vec::new();
     let mut visited = BTreeSet::new();
-    let mut continuing = false;
     loop {
-        let (mut rows, continuation) = playlist_page(&response, continuing)?;
+        let (mut rows, continuation) = parse_track_page(&response, !visited.is_empty(), strict)?;
         tracks.append(&mut rows);
-        let Some(token) = continuation else {
-            break;
-        };
+        let Some(token) = continuation else { break };
         if !visited.insert(token.clone()) {
-            return Err(Error::api(
-                "YouTube Music повторил страницу избранного. Синхронизация остановлена.",
-            ));
+            return Err(Error::api("YouTube Music повторил страницу плейлиста. Повторите загрузку."));
         }
-        continuing = true;
         response = ytm.request("browse", json!({"continuation":token})).await?;
     }
-    Ok(RemotePlaylist {
-        id: id.to_string(),
-        tracks,
-    })
+    Ok(tracks)
 }
 
 fn occurrence_id(row: &Value) -> Option<&str> {
@@ -499,20 +548,8 @@ fn playlist_tokens(container: &Value) -> BTreeSet<String> {
         .into_iter()
         .flatten()
     {
-        let Some(item) = entry.get("continuationItemRenderer") else {
-            continue;
-        };
-        for pointer in [
-            "/continuationEndpoint/continuationCommand/token",
-            "/button/buttonRenderer/command/continuationCommand/token",
-        ] {
-            if let Some(token) = item
-                .pointer(pointer)
-                .and_then(Value::as_str)
-                .filter(|token| !token.is_empty())
-            {
-                found.insert(token.to_string());
-            }
+        if let Some(token) = parse::continuation_item_token(entry) {
+            found.insert(token.to_owned());
         }
     }
     found
@@ -547,7 +584,13 @@ fn recommendation_shelf(entry: &Value) -> bool {
         })
 }
 
+#[cfg(test)]
 fn playlist_page(response: &Value, continuing: bool) -> Result<(Vec<RemoteTrack>, Option<String>)> {
+    let (rows, token) = parse_track_page(response, continuing, true)?;
+    Ok((rows.into_iter().map(PlaylistEntry::into_remote).collect::<Result<_>>()?, token))
+}
+
+fn parse_track_page(response: &Value, continuing: bool, strict: bool) -> Result<(Vec<PlaylistEntry>, Option<String>)> {
     let section_list = [
         "/continuationContents/sectionListContinuation",
         "/contents/twoColumnBrowseResultsRenderer/secondaryContents/sectionListRenderer",
@@ -588,8 +631,16 @@ fn playlist_page(response: &Value, continuing: bool) -> Result<(Vec<RemoteTrack>
                 .and_then(Value::as_array)
             {
                 entries.extend(children);
-            } else if entry.get("musicShelfRenderer").is_some() && !recommendation_shelf(entry) {
-                return Err(Error::api("YouTube Music вернул неоднозначную секцию избранного. Локальная копия не изменена."));
+            } else if let Some(shelf) = entry.get("musicShelfRenderer") {
+                if recommendation_shelf(entry) { continue; }
+                if strict {
+                    return Err(Error::api("YouTube Music вернул неоднозначную секцию избранного. Локальная копия не изменена."));
+                }
+                if shelf.get("contents").and_then(Value::as_array).is_some_and(|rows| rows.iter().any(|r| {
+                    r.pointer("/musicResponsiveListItemRenderer/playlistItemData").is_some()
+                })) {
+                    containers.push((shelf.clone(), true));
+                }
             }
         }
     }
@@ -640,11 +691,11 @@ fn playlist_page(response: &Value, continuing: bool) -> Result<(Vec<RemoteTrack>
                 }
             }
         });
-        if explicitly_empty && is_owned(response) {
+        if explicitly_empty && (!strict || is_owned(response)) {
             return Ok((Vec::new(), None));
         }
         return Err(Error::api(
-            "YouTube Music не вернул полный список избранного. Локальные треки сохранены.",
+            "YouTube Music не вернул полный список треков плейлиста.",
         ));
     }
     let mut tracks = Vec::new();
@@ -662,34 +713,13 @@ fn playlist_page(response: &Value, continuing: bool) -> Result<(Vec<RemoteTrack>
             let row = entry.get("musicResponsiveListItemRenderer")
                 .ok_or_else(|| Error::api("В плейлисте избранного есть неподдерживаемая запись. Синхронизация остановлена."))?;
             let set_video_id = occurrence_id(row).map(str::to_string);
-            if generic && set_video_id.is_none() {
+            if strict && generic && set_video_id.is_none() {
                 return Err(Error::api("Продолжение не подтверждает принадлежность треков плейлисту. Локальная копия не изменена."));
             }
-            let parsed = parse::continuation_page(
-                &json!({"continuationContents":{"musicPlaylistShelfContinuation":{"contents":[entry]}}}),
-            );
-            let item = parsed
-                .items
-                .into_iter()
-                .next()
-                .ok_or_else(|| Error::api("Не удалось прочитать трек избранного"))?;
-            let video_id = item.video_id.as_deref()
-                .filter(|id| id.len() == 11 && id.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte,b'_'|b'-')))
-                .ok_or_else(|| Error::api("В плейлисте избранного есть недоступный трек. Локальная копия не изменена."))?.to_string();
-            let duration = item.duration.as_deref().and_then(duration_seconds);
-            tracks.push(RemoteTrack {
-                favorite: Favorite {
-                    id: format!("yt:{video_id}"),
-                    source: "yt".into(),
-                    video_id: Some(video_id),
-                    title: item.title,
-                    subtitle: item.subtitle,
-                    duration,
-                    local_path: None,
-                    thumb: item.thumbs.last().cloned(),
-                },
-                set_video_id,
-            });
+            let item = parse::parse_responsive(row)
+                .ok_or_else(|| Error::api("Не удалось прочитать трек плейлиста"))?;
+            let stored_video_id = row.pointer("/playlistItemData/videoId").and_then(Value::as_str).map(str::to_owned);
+            tracks.push(PlaylistEntry { item, stored_video_id, set_video_id });
         }
     }
     if next.is_empty() {
@@ -745,6 +775,21 @@ mod tests {
             "playlistItemData":{"videoId":id,"playlistSetVideoId":occurrence},
             "flexColumns":[{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"text":"A song"}]}}}]
         }})
+    }
+
+    #[test]
+    fn unavailable_playlist_members_are_counted_during_audit_and_skipped_during_playback() {
+        let mut song = row("AAAAAAAAAAA", "occurrence");
+        song["musicResponsiveListItemRenderer"]["musicItemRendererDisplayPolicy"] =
+            json!("MUSIC_ITEM_RENDERER_DISPLAY_POLICY_GREY_OUT");
+        let response = json!({"onResponseReceivedCommands":[{"appendContinuationItemsAction":{
+            "continuationItems":[song, {"continuationItemRenderer":{"continuationEndpoint":{"continuationCommand":{"token":"page-two"}}}}]
+        }}]});
+        let (rows, next) = parse_track_page(&response, true, false).unwrap();
+        assert_eq!(next.as_deref(), Some("page-two"));
+        let entry = rows.into_iter().next().unwrap();
+        assert!(entry.item.video_id.is_none());
+        assert_eq!(entry.member().video_id.as_deref(), Some("AAAAAAAAAAA"));
     }
 
     #[test]

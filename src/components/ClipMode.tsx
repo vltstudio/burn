@@ -1,13 +1,15 @@
-import { ExternalLink, Music2, VideoOff } from "lucide-react";
+import { ExternalLink, Music2, RotateCw, VideoOff } from "lucide-react";
 import { useLayoutEffect, useRef, useState } from "react";
 import { api } from "../api";
 import type { ClipAudioHandoff } from "../player";
+import type { MediaItem } from "../types";
 import "./clip-mode.css";
 
 interface ClipModeProps {
   videoId: string;
   title: string;
   kind?: string;
+  track?: MediaItem;
   audio: ClipAudioHandoff;
   onClose: () => void;
 }
@@ -32,10 +34,13 @@ function errorMessage(code: unknown): string {
 }
 
 export function ClipMode(props: ClipModeProps) {
-  return <ClipSession key={JSON.stringify([props.videoId, props.kind])} {...props} />;
+  const [attempt, setAttempt] = useState(0);
+  return <ClipSession key={JSON.stringify([props.videoId, props.kind, attempt])} {...props}
+    onRetry={() => setAttempt((count) => count + 1)} />;
 }
 
-function ClipSession({ videoId, title, kind, audio, onClose }: ClipModeProps) {
+function ClipSession({ videoId, title, kind, track, audio, onClose, onRetry }: ClipModeProps & { onRetry: () => void }) {
+  const hint = useRef(track ? { title: track.title, artists: track.artists, duration: track.duration } : undefined);
   const iframe = useRef<HTMLIFrameElement>(null);
   const [state, setState] = useState<ClipState>({ status: "searching" });
   const [externalError, setExternalError] = useState(false);
@@ -103,7 +108,7 @@ function ClipSession({ videoId, title, kind, audio, onClose }: ClipModeProps) {
     async function load() {
       let resolvedId: string | undefined;
       try {
-        const id = await api.resolveClip(videoId, kind ?? null);
+        const id = await api.resolveClip(videoId, kind ?? null, hint.current);
         if (!active) return;
         if (id === null) {
           setState({ status: "unavailable" });
@@ -149,7 +154,7 @@ function ClipSession({ videoId, title, kind, audio, onClose }: ClipModeProps) {
     : state.status === "connecting" ? "Загружаем плеер YouTube…"
     : state.status === "starting" ? "Запускаем клип…"
     : state.status === "ready" ? "Нажмите ▶ в плеере YouTube, чтобы запустить клип."
-    : state.status === "unavailable" ? "У этого трека нет доступного клипа."
+    : state.status === "unavailable" ? "Доступный клип пока не найден."
     : state.status === "error" ? state.message
     : "Клип";
   const externalId = state.status === "error" ? state.videoId : undefined;
@@ -175,6 +180,9 @@ function ClipSession({ videoId, title, kind, audio, onClose }: ClipModeProps) {
           {statusText}
         </p>
         <div className="clip-mode__actions">
+          {(state.status === "unavailable" || state.status === "error") && (
+            <button type="button" onClick={onRetry}><RotateCw size={16} aria-hidden="true" /> Повторить поиск</button>
+          )}
           {externalId && (
             <button
               type="button"

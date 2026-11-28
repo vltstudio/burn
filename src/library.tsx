@@ -10,6 +10,7 @@ import {
 } from "react";
 import { api, ApiFailure, archiveCoverUrl } from "./api";
 import { toFavorite } from "./ui/format";
+import { playlistChanged } from "./ui/playlist-changes";
 import type { ArchiveState, ArchivedPlaylist, AuthStatus, Favorite, MediaItem } from "./types";
 
 /// Older builds kept the archive as playlist ids in localStorage; it is now a
@@ -52,6 +53,7 @@ interface LibraryApi {
   /** Favourite ids, for the hearts: `yt:<videoId>` or `local:<path>`. */
   favoriteIds: Set<string>;
   toggleFavorite: (item: MediaItem) => void;
+  addFavorites: (items: MediaItem[]) => Promise<number>;
   addToPlaylist: (videoId: string, playlistId: string) => Promise<boolean>;
   createPlaylistWith: (title: string, videoId: string | null) => Promise<boolean>;
   refreshPlaylists: () => void;
@@ -160,6 +162,23 @@ export function LibraryProvider({ auth, onToast, children }: Props) {
     [favoriteIds, onToast],
   );
 
+  const addFavorites = useCallback(async (items: MediaItem[]) => {
+    const entries = items.map(toFavorite).filter((entry): entry is Favorite => entry?.source === "yt");
+    const version = ++favoriteVersion.current;
+    const added = await api.addFavorites(entries);
+    const latest = await api.favorites().catch(() => null);
+    if (latest && favoriteVersion.current === version) setFavorites(latest);
+    else {
+      const confirmed = new Set((latest ?? added).map((item) => item.id));
+      setFavorites((current) => {
+        const ids = new Set(current.map((item) => item.id));
+        return [...added.filter((item) => confirmed.has(item.id) && !ids.has(item.id) && !favoriteRequests.current.has(item.id)), ...current];
+      });
+    }
+    syncSchedule.current();
+    return added.length;
+  }, []);
+
   const refreshPlaylists = useCallback(() => {
     const request = ++playlistRequest.current;
     if (!auth?.signedIn) {
@@ -168,13 +187,27 @@ export function LibraryProvider({ auth, onToast, children }: Props) {
     }
     api
       .libraryPlaylists()
-      .then((sections) => {
+      .then(async (sections) => {
         if (request !== playlistRequest.current) return;
-        setPlaylists(
-          sections
-            .flatMap((section) => section.items)
-            .filter((item) => item.kind === "playlist" && item.browseId),
-        );
+        const collected = new Map<string, MediaItem>();
+        const append = (items: MediaItem[]) => {
+          for (const item of items) {
+            if (item.kind === "playlist" && item.browseId) collected.set(item.browseId, item);
+          }
+          setPlaylists([...collected.values()]);
+        };
+        append(sections.flatMap((section) => section.items));
+        const seen = new Set<string>();
+        for (const section of sections) {
+          let token = section.continuation;
+          while (token && !seen.has(token)) {
+            seen.add(token);
+            const page = await api.browseMore(token);
+            if (request !== playlistRequest.current) return;
+            append(page.items);
+            token = page.continuation;
+          }
+        }
       })
       .catch((error) => {
         if (request !== playlistRequest.current) return;
@@ -246,6 +279,7 @@ export function LibraryProvider({ auth, onToast, children }: Props) {
     async (videoId: string, playlistId: string) => {
       try {
         await api.addToPlaylist(playlistId, videoId);
+        playlistChanged(playlistId);
         return true;
       } catch (error) {
         onToast(error instanceof ApiFailure ? error.message : String(error), "error");
@@ -363,6 +397,7 @@ export function LibraryProvider({ auth, onToast, children }: Props) {
       favorites,
       favoriteIds,
       toggleFavorite,
+      addFavorites,
       addToPlaylist,
       createPlaylistWith,
       refreshPlaylists,
@@ -382,6 +417,7 @@ export function LibraryProvider({ auth, onToast, children }: Props) {
       favorites,
       favoriteIds,
       toggleFavorite,
+      addFavorites,
       addToPlaylist,
       createPlaylistWith,
       refreshPlaylists,

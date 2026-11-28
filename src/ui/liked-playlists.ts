@@ -5,6 +5,7 @@ interface SpotifySources {
   selected: string | null;
   liked: string[];
   ordinary: string[];
+  imports?: Record<string, { source: string; title: string }>;
 }
 
 const sourceCache = new Map<string, SpotifySources>();
@@ -20,6 +21,11 @@ function readSources(account: string): SpotifySources {
         selected: typeof value.selected === "string" ? value.selected : null,
         liked: value.liked.filter((id: unknown): id is string => typeof id === "string"),
         ordinary: value.ordinary.filter((id: unknown): id is string => typeof id === "string"),
+        imports: Object.fromEntries(Object.entries(value.imports ?? {}).filter((pair): pair is [string, { source: string; title: string }] => {
+          const entry = pair[1];
+          return typeof entry === "object" && entry !== null && "source" in entry && typeof entry.source === "string"
+            && "title" in entry && typeof entry.title === "string";
+        })),
       };
       sourceCache.set(account, sources);
       return sources;
@@ -28,18 +34,22 @@ function readSources(account: string): SpotifySources {
   return { selected: null, liked: [], ordinary: [] };
 }
 
-export function rememberSpotifyImport(account: string | null, id: string, liked: boolean) {
+export function rememberSpotifyImport(account: string | null, id: string, liked: boolean, source?: string, title?: string) {
   const normalized = id.trim().replace(/^VL/, "");
   if (!account || !normalized) return;
   const current = readSources(account);
-  const next = liked ? {
+  const next: SpotifySources = liked ? {
+    ...current,
     selected: normalized,
     liked: [...new Set([...current.liked, normalized])],
     ordinary: current.ordinary.filter((entry) => entry !== normalized),
   } : {
     ...current,
+    selected: current.selected === normalized ? current.liked.filter((id) => id !== normalized).at(-1) ?? null : current.selected,
+    liked: current.liked.filter((entry) => entry !== normalized),
     ordinary: [...new Set([...current.ordinary, normalized])],
   };
+  if (source && title) next.imports = { ...current.imports, [normalized]: { source, title } };
   sourceCache.set(account, next);
   try {
     window.localStorage.setItem(`ytmusicdt.spotifyLiked:${account}`, JSON.stringify(next));
@@ -74,7 +84,8 @@ export function useSpotifyLikedPlaylists(account: string | null, items: MediaIte
   useEffect(() => {
     if (account && selected && !sources.selected) rememberSpotifyImport(account, selected, true);
   }, [account, selected, sources.selected]);
-  return { playlistId: selected, hiddenIds: new Set([...sources.liked, ...(selected ? [selected] : [])]) };
+  return { playlistId: selected, imports: sources.imports, ordinary: sources.ordinary,
+    hiddenIds: new Set([...sources.liked, ...(selected ? [selected] : [])]) };
 }
 
 export function isSpecialLikedPlaylist(item: MediaItem, servicePlaylistId: string | null, spotifyIds: ReadonlySet<string>): boolean {

@@ -240,6 +240,9 @@ impl Ytm {
             let status = response.status();
             let text = response.text().await.unwrap_or_default();
 
+            if status.as_u16() == 403 && endpoint == "account/account_menu" {
+                return Err(Error::api("YouTube Music отклонил проверку аккаунта. Сохранённый вход можно проверить ещё раз в настройках."));
+            }
             if status.as_u16() == 401 || status.as_u16() == 403 {
                 return Err(Error::Auth(
                     "Войдите через Google, чтобы открыть библиотеку".into(),
@@ -333,6 +336,47 @@ mod probe {
     }
 
     #[tokio::test]
+    #[ignore = "reads a public artist and discography from the live catalog"]
+    async fn anonymous_artist_discography() {
+        let ytm = client();
+        let results = api::search(&ytm, "Clonnex", Some("artists")).await.unwrap();
+        let mut artists = std::collections::BTreeSet::new();
+        for artist in results.top.iter().chain(&results.items).filter(|item| item.title.eq_ignore_ascii_case("Clonnex")) {
+            let Some(id) = &artist.browse_id else { continue };
+            if !artists.insert(id.clone()) { continue; }
+            let detail = api::browse(&ytm, id).await.unwrap();
+            for section in detail.sections {
+                let Some(more) = section.more_endpoint else { continue };
+                let mut page = api::browse_releases(&ytm, &more.browse_id, &more.params).await.unwrap();
+                let mut tokens = std::collections::BTreeSet::new();
+                loop {
+                    if let Some(ep) = page.items.iter().find(|item| item.title.to_lowercase().contains("blood n roll")) {
+                        let album = api::browse(&ytm, ep.browse_id.as_deref().unwrap()).await.unwrap();
+                        let track = album.sections.iter().flat_map(|section| &section.items).find(|item| item.video_id.is_some()).unwrap();
+                        let stream = audio_resolver::AudioResolver::new(ytm.http.clone()).resolve(track.video_id.as_deref().unwrap()).await;
+                        match stream {
+                            Ok(url) => {
+                                let sample = ytm.http.get(url).header(reqwest::header::RANGE, "bytes=0-511").send().await.unwrap();
+                                assert_eq!(sample.status(), 206);
+                                assert_eq!(sample.bytes().await.unwrap().len(), 512);
+                                println!("{} — {} — {}: audio available", artist.title, ep.title, track.title);
+                            }
+                            Err(audio_resolver::ResolveError::SignInRequired) => {
+                                println!("{} — {} — {}: official player sign-in required", artist.title, ep.title, track.title);
+                            }
+                            Err(error) => panic!("{} — {}: {error}", ep.title, track.title),
+                        }
+                        return;
+                    }
+                    let Some(token) = page.continuation.filter(|token| tokens.insert(token.clone())) else { break };
+                    page = api::browse_more(&ytm, &token).await.unwrap();
+                }
+            }
+        }
+        panic!("the public discography did not return the EP");
+    }
+
+    #[tokio::test]
     #[ignore = "hits the live anonymous YouTube Music catalog; results can vary by region"]
     async fn anonymous_clip_discovery() {
         let ytm = client();
@@ -343,7 +387,7 @@ mod probe {
             ("HzdD8kbDzZA", Some("djV11Xbc914")),
             ("Qd8DtYYloE8", Some("nUqV2bwfVdM")),
         ] {
-            let found = api::resolve_clip(&ytm, track, Some("song"))
+            let found = api::resolve_clip(&ytm, track, Some("song"), None)
                 .await
                 .expect("clip lookup");
             println!("{track} → {found:?}");

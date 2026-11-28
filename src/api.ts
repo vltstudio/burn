@@ -23,6 +23,7 @@ import type {
   Section,
   Settings,
   SpotifyImportResult,
+  SpotifySyncReport,
   SpotifyPlaylist,
   SpotifyStatus,
 } from "./types";
@@ -62,7 +63,8 @@ export const api = {
   search: (query: string, filter: string | null) =>
     call<SearchResults>("search", { query, filter }),
   watchTrack: (videoId: string) => call<MediaItem>("watch_track", { videoId }),
-  resolveClip: (videoId: string, kind: string | null) => call<string | null>("resolve_clip", { videoId, kind }),
+  resolveClip: (videoId: string, kind: string | null, hint?: Pick<MediaItem, "title" | "artists" | "duration">) =>
+    call<string | null>("resolve_clip", { videoId, kind, ...(hint ? { hint } : {}) }),
   startClipEmbed: (videoId: string, channel: string) => call<string>("start_clip_embed", { videoId, channel }),
   yandexPreview: (files: YandexFile[]) => call<YandexPreview>("yandex_preview", { files }),
   yandexImport: (collections: YandexCollection[], requestId: string) =>
@@ -84,12 +86,15 @@ export const api = {
   archiveCoverSet: (path: string) => call<ArchiveState>("archive_cover_set", { path }),
   archiveCoverClear: () => call<ArchiveState>("archive_cover_clear"),
   toggleFavorite: (favorite: Favorite) => call<boolean>("favorite_toggle", { favorite }),
+  addFavorites: (items: Favorite[]) => call<Favorite[]>("favorites_add", { items }),
+  playlistTracks: (playlistId: string) => call<MediaItem[]>("playlist_tracks", { playlistId }),
   searchMore: (continuation: string, query: string, filter: string | null) =>
     call<Section>("search_more", { continuation, query, filter }),
   suggestions: (query: string) => call<string[]>("suggestions", { query }),
   home: () => call<Section[]>("home"),
   browse: (browseId: string) => call<Detail>("browse", { browseId }),
   browseMore: (continuation: string) => call<Section>("browse_more", { continuation }),
+  browseReleases: (browseId: string, params: string) => call<Section>("browse_releases", { browseId, params }),
   libraryPlaylists: () => call<Section[]>("library_playlists").then((sections) => sections.map((section) => ({
     ...section,
     items: section.items.map((item) => item.playlistId === "LM" || item.browseId === "VLLM"
@@ -123,6 +128,8 @@ export const api = {
   spotifyImport: (url: string, title: string | null, description: string | null, cover: boolean, requestId: string) =>
     call<SpotifyImportResult>("spotify_import", { url, title, description, cover, requestId }),
   spotifyImportCancel: (requestId: string) => call<boolean>("spotify_import_cancel", { requestId }),
+  spotifySync: (source: string, playlistId: string, repair: boolean, requestId: string) =>
+    call<SpotifySyncReport>("spotify_sync", { source, playlistId, repair, requestId }),
   authStatus: (refresh = false) => call<AuthStatus>("auth_status", { refresh }),
   authOpenSignin: () => call<void>("auth_open_signin"),
   authPollSignin: () => call<AuthPoll>("auth_poll_signin"),
@@ -138,6 +145,7 @@ export const api = {
   streamUrl: (videoId: string, refresh = false) => call<string>("stream_url", { videoId, refresh }),
   downloads: () => call<DownloadsSnapshot>("downloads_state"),
   openUrl: (url: string) => openUrl(url),
+  openYouTubePlayer: (videoId: string) => call<void>("open_youtube_player", { videoId }),
 };
 
 function localMediaBase(): string {

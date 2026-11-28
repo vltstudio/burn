@@ -79,6 +79,7 @@ export interface Section {
   layout: "carousel" | "grid" | "list";
   items: MediaItem[];
   continuation: string | null;
+  moreEndpoint?: { browseId: string; params: string };
 }
 
 export interface DetailHeader {
@@ -140,6 +141,7 @@ export interface DiscordPresenceView {
 }
 
 export interface DiscordActivity {
+  videoId?: string;
   title: string;
   artist: string | null;
   coverUrl: string | null;
@@ -201,6 +203,15 @@ export interface SpotifyImportResult {
 /** Whether the app holds a Spotify web session. */
 export interface SpotifyStatus {
   signedIn: boolean;
+}
+
+export interface SpotifySyncReport {
+  total: number;
+  present: number;
+  added: number;
+  repeats: number;
+  missing: SpotifyImportResult["unmatched"];
+  unmatched: SpotifyImportResult["unmatched"];
 }
 
 /** One line of lyrics with the moment it starts, in milliseconds. */

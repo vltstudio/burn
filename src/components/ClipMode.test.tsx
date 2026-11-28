@@ -67,13 +67,21 @@ describe("ClipMode", () => {
   it("does not start an embed or offer an unrelated video for an audio-only item", async () => {
     api.resolveClip.mockResolvedValue(null);
     await render();
-    expect(host.textContent).toContain("нет доступного клипа");
+    expect(host.textContent).toContain("клип пока не найден");
     expect(host.querySelector("iframe")).toBeNull();
     expect(host.textContent).not.toContain("Открыть на YouTube");
     expect(api.startClipEmbed).not.toHaveBeenCalled();
     expect(audio.takeOver).not.toHaveBeenCalled();
-    await act(async () => host.querySelector("button")?.click());
+    await act(async () => Array.from(host.querySelectorAll("button")).find((button) => button.textContent?.includes("Вернуться"))?.click());
     expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("retries discovery when a clip becomes available", async () => {
+    api.resolveClip.mockResolvedValueOnce(null);
+    await render();
+    await act(async () => Array.from(host.querySelectorAll("button")).find((button) => button.textContent?.includes("Повторить поиск"))?.click());
+    expect(api.resolveClip).toHaveBeenCalledTimes(2);
+    expect(host.querySelector("iframe")).not.toBeNull();
   });
 
   it("isolates the hosted frame and authenticates player messages before accepting them", async () => {
@@ -142,7 +150,7 @@ describe("ClipMode", () => {
     api.resolveClip.mockResolvedValue(null);
     await render("M7lc1UVf-VE");
     await act(async () => resolvePrevious(clip));
-    expect(host.textContent).toContain("нет доступного клипа");
+    expect(host.textContent).toContain("клип пока не найден");
     expect(api.startClipEmbed).not.toHaveBeenCalled();
   });
 

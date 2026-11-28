@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(Serialize, Clone, Debug, Default)]
+#[derive(Deserialize, Serialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ItemRef {
     pub name: String,
@@ -34,6 +34,15 @@ pub struct Section {
     pub layout: String,
     pub items: Vec<MediaItem>,
     pub continuation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub more_endpoint: Option<BrowseEndpoint>,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowseEndpoint {
+    pub browse_id: String,
+    pub params: String,
 }
 
 #[derive(Serialize, Clone, Debug, Default)]
@@ -161,6 +170,8 @@ fn endpoint_of(node: &Value) -> Endpoint {
 
 fn music_video_type(node: &Value) -> Option<String> {
     for pointer in [
+        "/musicVideoType",
+        "/flexColumns/0/musicResponsiveListItemFlexColumnRenderer/text/runs/0/navigationEndpoint/watchEndpoint/watchEndpointMusicSupportedConfigs/watchEndpointMusicConfig/musicVideoType",
         "/overlay/musicItemThumbnailOverlayRenderer/content/musicPlayButtonRenderer/playNavigationEndpoint/watchEndpoint/watchEndpointMusicSupportedConfigs/watchEndpointMusicConfig/musicVideoType",
         "/navigationEndpoint/watchEndpoint/watchEndpointMusicSupportedConfigs/watchEndpointMusicConfig/musicVideoType",
     ] {
@@ -265,12 +276,13 @@ fn continuation_at(node: &Value) -> Option<String> {
         .or_else(|| node.pointer("/continuations/0/reloadContinuationData/continuation"))
         .and_then(Value::as_str)
         .map(str::to_string)
+        .or_else(|| continuation_from_items(node.get("contents")?.as_array()?))
 }
 
 // ---------------------------------------------------------------- list items
 
 /// `musicResponsiveListItemRenderer` — the row used by search, shelves and track lists.
-fn parse_responsive(node: &Value) -> Option<MediaItem> {
+pub(crate) fn parse_responsive(node: &Value) -> Option<MediaItem> {
     let columns = node.get("flexColumns")?.as_array()?;
     let mut column_texts: Vec<String> = Vec::new();
     let mut artists: Vec<ItemRef> = Vec::new();
@@ -334,6 +346,8 @@ fn parse_responsive(node: &Value) -> Option<MediaItem> {
 
     let own = endpoint_of(node);
     let video_id = video_id_of(node).or(own.video_id);
+    let available = clip_playable(node) && node.get("musicItemRendererDisplayPolicy").and_then(Value::as_str)
+        != Some("MUSIC_ITEM_RENDERER_DISPLAY_POLICY_GREY_OUT");
     let video_type = music_video_type(node);
     let kind = kind_of(
         own.page_type.as_deref(),
@@ -351,7 +365,7 @@ fn parse_responsive(node: &Value) -> Option<MediaItem> {
         kind,
         title,
         subtitle: column_texts.get(1).cloned().unwrap_or_default(),
-        video_id,
+        video_id: video_id.filter(|_| available),
         browse_id,
         playlist_id,
         duration,
@@ -408,6 +422,10 @@ fn parse_two_row(node: &Value) -> Option<MediaItem> {
     }
     let kind = if own.browse_id.is_none() && own.watch_playlist_id.is_some() {
         "playlist".to_string()
+    } else if own.page_type.is_none()
+        && browse_id.as_deref().is_some_and(|id| id.starts_with("MPRE"))
+    {
+        "album".to_string()
     } else {
         kind_of(own.page_type.as_deref(), video_id.as_deref(), None)
     };
@@ -477,7 +495,28 @@ fn parse_shelf(section: &Value, out: &mut Vec<Section>) {
             .and_then(Value::as_array)
             .map(|contents| contents.iter().filter_map(parse_cell).collect())
             .unwrap_or_default();
-        if !items.is_empty() {
+        let more_endpoint = shelf
+            .pointer("/header/musicCarouselShelfBasicHeaderRenderer/moreContentButton/buttonRenderer/navigationEndpoint/browseEndpoint")
+            .and_then(|endpoint| {
+                let page_type = endpoint
+                    .pointer("/browseEndpointContextSupportedConfigs/browseEndpointContextMusicConfig/pageType")
+                    .and_then(Value::as_str);
+                match page_type {
+                    Some("MUSIC_PAGE_TYPE_ARTIST_DISCOGRAPHY") => (),
+                    None if !items.is_empty() && items.iter().all(|item| item.kind == "album") => (),
+                    _ => return None,
+                }
+                let browse_id = endpoint.get("browseId")?.as_str()?;
+                let params = endpoint.get("params")?.as_str()?;
+                if browse_id.is_empty() || params.is_empty() {
+                    return None;
+                }
+                Some(BrowseEndpoint {
+                    browse_id: browse_id.into(),
+                    params: params.into(),
+                })
+            });
+        if !items.is_empty() || more_endpoint.is_some() {
             out.push(Section {
                 title: Some(text_at(
                     shelf,
@@ -487,6 +526,7 @@ fn parse_shelf(section: &Value, out: &mut Vec<Section>) {
                 layout: "carousel".into(),
                 items,
                 continuation: continuation_at(shelf),
+                more_endpoint,
             });
         }
         return;
@@ -500,6 +540,7 @@ fn parse_shelf(section: &Value, out: &mut Vec<Section>) {
                 layout: "list".into(),
                 items,
                 continuation: continuation_at(shelf),
+                more_endpoint: None,
             });
         }
         return;
@@ -507,12 +548,13 @@ fn parse_shelf(section: &Value, out: &mut Vec<Section>) {
 
     if let Some(shelf) = section.get("musicPlaylistShelfRenderer") {
         let items = parse_responsive_list(shelf.get("contents"));
-        if !items.is_empty() {
+        if !items.is_empty() || continuation_at(shelf).is_some() {
             out.push(Section {
                 title: None,
                 layout: "list".into(),
                 items,
                 continuation: continuation_at(shelf),
+                more_endpoint: None,
             });
         }
         return;
@@ -530,7 +572,8 @@ fn parse_shelf(section: &Value, out: &mut Vec<Section>) {
                     .filter(|t| !t.is_empty()),
                 layout: "grid".into(),
                 items,
-                continuation: continuation_at(grid),
+                continuation: grid_continuation(grid),
+                more_endpoint: None,
             });
         }
         return;
@@ -579,11 +622,88 @@ pub fn sections(response: &Value) -> Vec<Section> {
     if let Some(list) = section_list(response) {
         if let Some(contents) = list.get("contents").and_then(Value::as_array) {
             for section in contents {
+                let start = out.len();
                 parse_shelf(section, &mut out);
+                let primary = section.get("musicPlaylistShelfRenderer").is_some()
+                    || section.get("gridRenderer").is_some() && contents.iter().filter(|node| node.get("continuationItemRenderer").is_none()).count() == 1;
+                if primary {
+                    if let Some(shelf) = out.get_mut(start) {
+                        if shelf.continuation.is_none() { shelf.continuation = continuation_at(list); }
+                    }
+                }
             }
         }
     }
     out
+}
+
+pub(crate) fn continuation_item_token(item: &Value) -> Option<&str> {
+    let item = item.get("continuationItemRenderer")?;
+    let endpoint = item.get("continuationEndpoint").or_else(|| item.pointer("/button/buttonRenderer/command"))?;
+    endpoint.pointer("/continuationCommand/token").or_else(|| {
+        endpoint.pointer("/commandExecutorCommand/commands")?.as_array()?.iter()
+            .find_map(|command| command.pointer("/continuationCommand/token"))
+    }).and_then(Value::as_str).filter(|token| !token.is_empty())
+}
+
+fn continuation_from_items(items: &[Value]) -> Option<String> {
+    items.iter().rev().find_map(continuation_item_token).map(str::to_owned)
+}
+
+fn grid_continuation(grid: &Value) -> Option<String> {
+    continuation_at(grid).or_else(|| continuation_from_items(grid.get("items")?.as_array()?))
+}
+
+#[cfg(test)]
+#[test]
+fn carousel_exposes_the_full_release_browse_target_without_a_continuation() {
+    let mut sections = Vec::new();
+    parse_shelf(
+        &serde_json::json!({"musicCarouselShelfRenderer": {
+            "header": {"musicCarouselShelfBasicHeaderRenderer": {
+                "title": {"runs": [{"text": "Singles & EPs"}]},
+                "moreContentButton": {"buttonRenderer": {"navigationEndpoint": {
+                    "browseEndpoint": {"browseId": "MPADUCartist", "params": "releaseParams",
+                        "browseEndpointContextSupportedConfigs": {"browseEndpointContextMusicConfig": {
+                            "pageType": "MUSIC_PAGE_TYPE_ARTIST_DISCOGRAPHY"
+                        }}
+                    }
+                }}}
+            }}
+        }}),
+        &mut sections,
+    );
+    assert_eq!(sections.len(), 1);
+    assert!(sections[0].continuation.is_none());
+    let endpoint = sections[0].more_endpoint.as_ref().unwrap();
+    assert_eq!(endpoint.browse_id, "MPADUCartist");
+    assert_eq!(endpoint.params, "releaseParams");
+}
+
+#[cfg(test)]
+#[test]
+fn release_grid_reads_the_continuation_item_from_both_pages() {
+    let release = serde_json::json!({"musicTwoRowItemRenderer": {
+        "title": {"runs": [{"text": "Blood N Roll"}]},
+        "navigationEndpoint": {"browseEndpoint": {"browseId": "MPREb_fixture"}}
+    }});
+    let more = serde_json::json!({"continuationItemRenderer": {"continuationEndpoint": {
+        "continuationCommand": {"token": "nextPage"}
+    }}});
+    let mut sections = Vec::new();
+    parse_shelf(
+        &serde_json::json!({"gridRenderer": {"items": [release.clone(), more.clone()]}}),
+        &mut sections,
+    );
+    assert_eq!(sections[0].items.len(), 1);
+    assert_eq!(sections[0].items[0].kind, "album");
+    assert_eq!(sections[0].continuation.as_deref(), Some("nextPage"));
+
+    let next = continuation_page(&serde_json::json!({"onResponseReceivedActions": [{
+        "appendContinuationItemsAction": {"continuationItems": [release, more]}
+    }]}));
+    assert_eq!(next.items[0].title, "Blood N Roll");
+    assert_eq!(next.continuation.as_deref(), Some("nextPage"));
 }
 
 pub fn continuation_page(response: &Value) -> Section {
@@ -596,6 +716,7 @@ pub fn continuation_page(response: &Value) -> Section {
             layout: "list".into(),
             items: Vec::new(),
             continuation: continuation_at(list),
+            more_endpoint: None,
         };
         for child in list
             .get("contents")
@@ -626,6 +747,7 @@ pub fn continuation_page(response: &Value) -> Section {
             layout: "list".into(),
             items: parse_responsive_list(list.get("contents")),
             continuation: continuation_at(list),
+            more_endpoint: None,
         };
     }
     if let Some(grid) = contents.and_then(|c| c.get("gridContinuation")) {
@@ -638,8 +760,36 @@ pub fn continuation_page(response: &Value) -> Section {
             title: None,
             layout: "grid".into(),
             items,
-            continuation: continuation_at(grid),
+            continuation: grid_continuation(grid),
+            more_endpoint: None,
         };
+    }
+    for action in ["onResponseReceivedActions", "onResponseReceivedCommands"].iter()
+        .filter_map(|key| response.get(*key).and_then(Value::as_array)).flatten()
+    {
+        let Some(entries) = action
+            .pointer("/appendContinuationItemsAction/continuationItems")
+            .and_then(Value::as_array)
+        else {
+            continue;
+        };
+        if entries.iter().any(|item| item.get("musicResponsiveListItemRenderer").is_some()) {
+            return Section {
+                layout: "list".into(),
+                items: entries.iter().filter_map(parse_cell).collect(),
+                continuation: continuation_from_items(entries),
+                ..Section::default()
+            };
+        }
+        if entries.iter().any(|item| item.get("musicTwoRowItemRenderer").is_some()) {
+            return Section {
+                title: None,
+                layout: "grid".into(),
+                items: entries.iter().filter_map(parse_cell).collect(),
+                continuation: continuation_from_items(entries),
+                more_endpoint: None,
+            };
+        }
     }
     Section::default()
 }
@@ -719,16 +869,8 @@ fn watch_queue(response: &Value) -> Option<Vec<&Value>> {
     found.then_some(entries)
 }
 
-pub fn watch_track(response: &Value, video_id: &str) -> Option<MediaItem> {
-    if response
-        .pointer("/currentVideoEndpoint/watchEndpoint/videoId")?
-        .as_str()?
-        != video_id
-        || !clip_playable(response)
-    {
-        return None;
-    }
-    let track = watch_queue(response)?
+fn queue_row<'a>(response: &'a Value, video_id: &str) -> Option<&'a Value> {
+    watch_queue(response)?
         .into_iter()
         .filter_map(|entry| {
             entry.get("playlistPanelVideoRenderer").or_else(|| {
@@ -737,8 +879,19 @@ pub fn watch_track(response: &Value, video_id: &str) -> Option<MediaItem> {
                 )
             })
         })
-        .find(|track| track.get("videoId").and_then(Value::as_str) == Some(video_id))?;
-    panel_video(track)
+        .find(|track| track.get("videoId").and_then(Value::as_str) == Some(video_id))
+}
+
+pub(super) fn allows_clip_lookup(response: &Value, video_id: &str) -> bool {
+    valid_video_id(video_id) && clip_playable(response)
+        && !response.pointer("/currentVideoEndpoint/watchEndpoint/videoId")
+            .and_then(Value::as_str).is_some_and(|id| id != video_id)
+        && queue_row(response, video_id).is_none_or(clip_playable)
+}
+
+pub fn watch_track(response: &Value, video_id: &str) -> Option<MediaItem> {
+    if !allows_clip_lookup(response, video_id) { return None; }
+    panel_video(queue_row(response, video_id)?)
 }
 
 pub(super) fn clip_counterpart<'a>(response: &'a Value, video_id: &str) -> Option<&'a str> {
@@ -807,22 +960,41 @@ fn clip_title(title: &str) -> String {
         .join(" ")
 }
 
-fn clip_video_title(title: &str) -> String {
-    let title = title.trim();
-    for (left, right) in [('(', ')'), ('[', ']')] {
-        if let Some((base, suffix)) = title
-            .strip_suffix(right)
-            .and_then(|text| text.rsplit_once(left))
-        {
-            if matches!(
-                clip_title(suffix).as_str(),
-                "official music video" | "official video"
-            ) {
-                return clip_title(base);
+/// Remove only explicit video credits. Keep live, acoustic, remix and other version labels.
+fn clip_video_title(title: &str, credits: &[ItemRef]) -> (String, bool) {
+    let normalized = clip_title(title);
+    let mut base = normalized.as_str();
+    let mut labelled = false;
+    for suffix in [
+        "official music video", "official video", "official mv", "music video",
+        "официальный видеоклип", "официальный клип", "офіційний кліп",
+    ] {
+        if let Some(prefix) = base.strip_suffix(suffix).and_then(|prefix| prefix.strip_suffix(' ')) {
+            base = prefix;
+            labelled = true;
+            break;
+        }
+    }
+    // A video often includes the channel credit before a dash in its title.
+    for separator in [" - ", " — ", " – "] {
+        if let Some((prefix, _)) = title.split_once(separator) {
+            let artist = clip_title(prefix);
+            if credits.iter().any(|credit| clip_title(&credit.name) == artist) {
+                if let Some(rest) = base.strip_prefix(&artist).and_then(|rest| rest.strip_prefix(' ')) {
+                    base = rest;
+                    break;
+                }
             }
         }
     }
-    clip_title(title)
+    (base.to_owned(), labelled)
+}
+
+fn clip_credit(item: &MediaItem) -> String {
+    if item.artists.is_empty() {
+        return clip_title(item.subtitle.split(['•', '·']).next().unwrap_or_default());
+    }
+    clip_title(&item.artists.iter().map(|artist| artist.name.as_str()).collect::<Vec<_>>().join(", "))
 }
 
 fn clip_duration(text: &str) -> Option<u32> {
@@ -842,18 +1014,15 @@ fn clip_duration(text: &str) -> Option<u32> {
 }
 
 pub(super) fn clip_search_match(response: &Value, track: &MediaItem) -> Option<String> {
-    let artist = &track.artists.first()?.browse_id;
-    if artist.is_empty() {
+    if track.artists.is_empty() {
         return None;
     }
     let title = clip_title(&track.title);
-    if title.is_empty() {
-        return None;
-    }
-    let duration = clip_duration(track.duration.as_deref()?)?;
-    let tolerance = (duration * 8 / 100).clamp(5, 25);
+    if title.is_empty() { return None; }
+    let source_credit = clip_credit(track);
+    let duration = track.duration.as_deref().and_then(clip_duration);
     let sections = section_list(response)?.get("contents")?.as_array()?;
-    let mut best = None::<(u32, String)>;
+    let mut best = None::<((bool, bool, u32), String)>;
     let mut tied = false;
     for section in sections.iter().flat_map(|section| {
         std::iter::once(section).chain(
@@ -874,44 +1043,42 @@ pub(super) fn clip_search_match(response: &Value, track: &MediaItem) -> Option<S
             .iter()
             .filter_map(|row| row.get("musicResponsiveListItemRenderer"))
         {
-            if !clip_playable(row)
-                || music_video_type(row).as_deref() != Some("MUSIC_VIDEO_TYPE_OMV")
-            {
+            if !clip_playable(row) { continue; }
+            let kind = music_video_type(row);
+            let official = kind.as_deref() == Some("MUSIC_VIDEO_TYPE_OMV");
+            if !official && kind.as_deref() != Some("MUSIC_VIDEO_TYPE_UGC") { continue; }
+            let Some(candidate) = parse_responsive(row) else { continue };
+            let Some(id) = candidate.video_id.as_ref().filter(|id| valid_video_id(id) && track.video_id.as_ref() != Some(id))
+            else { continue };
+            let same_channel = track.artists.iter().any(|artist| !artist.browse_id.is_empty()
+                && candidate.artists.iter().any(|credit| credit.browse_id == artist.browse_id));
+            let same_name = track.artists.iter().any(|artist| candidate.artists.iter().any(|credit|
+                (artist.browse_id.is_empty() || credit.browse_id.is_empty())
+                    && !artist.name.is_empty() && clip_title(&artist.name) == clip_title(&credit.name)));
+            let (video_title, labelled) = clip_video_title(&candidate.title, &track.artists);
+            let complete_credit = official && (track.artists.iter().all(|credit| credit.browse_id.is_empty())
+                || candidate.artists.is_empty()) && !source_credit.is_empty() && source_credit == clip_credit(&candidate);
+            if video_title != title || !(same_channel || (official && same_name) || complete_credit)
+                || (!official && !(same_channel && labelled)) {
                 continue;
             }
-            let Some(candidate) = parse_responsive(row) else {
-                continue;
+            let delta = match (duration, candidate.duration.as_deref().and_then(clip_duration)) {
+                (Some(audio), Some(video)) => {
+                    let delta = audio.abs_diff(video);
+                    let tolerance = if labelled && same_channel { (audio / 3).clamp(25, 90) }
+                        else { (audio.saturating_mul(8) / 100).clamp(5, 25) };
+                    if delta > tolerance { continue; }
+                    delta
+                }
+                (None, Some(_)) if official && same_channel => u32::MAX,
+                _ => continue,
             };
-            let Some(id) = candidate
-                .video_id
-                .filter(|id| valid_video_id(id) && track.video_id.as_ref() != Some(id))
-            else {
-                continue;
-            };
-            if !candidate
-                .artists
-                .first()
-                .is_some_and(|credit| &credit.browse_id == artist)
-                || clip_video_title(&candidate.title) != title
-            {
-                continue;
-            }
-            let Some(delta) = candidate
-                .duration
-                .as_deref()
-                .and_then(clip_duration)
-                .map(|value| duration.abs_diff(value))
-            else {
-                continue;
-            };
-            if delta > tolerance {
-                continue;
-            }
+            let rank = (!same_channel, !official, delta);
             match &best {
-                Some((score, _)) if *score < delta => (),
-                Some((score, best_id)) if *score == delta => tied |= best_id != &id,
+                Some((score, _)) if *score < rank => (),
+                Some((score, best_id)) if *score == rank => tied |= best_id != id,
                 _ => {
-                    best = Some((delta, id));
+                    best = Some((rank, id.clone()));
                     tied = false;
                 }
             }
@@ -1047,6 +1214,20 @@ mod clip_tests {
             duration: Some("4:00".into()),
             ..MediaItem::default()
         }
+    }
+
+    #[test]
+    fn matches_artist_uploaded_labelled_clips_and_credits_beyond_the_first_artist() {
+        let mut collab = song();
+        collab.artists.insert(0, ItemRef { name: "Another artist".into(), browse_id: "UC-other".into() });
+        let result = search(vec![video(CLIP, "The Band — Don’t Stop Me (Официальный клип)",
+            "UC-band", "4:48", "MUSIC_VIDEO_TYPE_UGC")]);
+        assert_eq!(clip_search_match(&result, &collab).as_deref(), Some(CLIP));
+        let mut favorite = song();
+        favorite.artists[0].browse_id.clear();
+        assert_eq!(clip_search_match(&result, &favorite), None);
+        let official = search(vec![video(CLIP, "Don't Stop Me", "UC-band", "4:01", "MUSIC_VIDEO_TYPE_OMV")]);
+        assert_eq!(clip_search_match(&official, &favorite).as_deref(), Some(CLIP));
     }
 
     #[test]
@@ -1501,7 +1682,10 @@ mod recommendation_tests {
         assert_eq!(item.artists[0].browse_id, "UCartist");
         assert_eq!(item.album.as_ref().unwrap().name, "Album");
         assert_eq!(item.album.as_ref().unwrap().browse_id, "MPREalbum");
-        assert!(watch_track(&response, "AAAAAAAAAAA").is_none());
+        assert_eq!(watch_track(&response, "AAAAAAAAAAA").unwrap().title, item.title);
+        let mut different = response;
+        different["currentVideoEndpoint"] = json!({"watchEndpoint":{"videoId":SEED}});
+        assert!(watch_track(&different, "AAAAAAAAAAA").is_none());
     }
 
     #[test]

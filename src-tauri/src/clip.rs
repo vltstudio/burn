@@ -22,10 +22,11 @@ pub async fn resolve_clip(
     state: tauri::State<'_, Arc<AppState>>,
     video_id: String,
     kind: Option<String>,
+    hint: Option<ytm::api::ClipHint>,
 ) -> Result<Option<String>> {
     timeout(
         LOOKUP_TIMEOUT,
-        ytm::api::resolve_clip(&state.ytm, &video_id, kind.as_deref()),
+        ytm::api::resolve_clip(&state.ytm, &video_id, kind.as_deref(), hint),
     )
     .await
     .map_err(|_| Error::api("Превышено время ожидания поиска клипа"))?
