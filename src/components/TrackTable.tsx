@@ -1,6 +1,7 @@
-import { Clock3, Heart, Play } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { ArrowDownToLine, Clock3, Heart, Play } from "lucide-react";
+import { useEffect, useMemo, useRef } from "react";
 import { api } from "../api";
+import { useDownloads } from "../downloads-provider";
 import type { MediaItem } from "../types";
 import { useLibrary } from "../library";
 import { usePlayback } from "../player";
@@ -30,6 +31,11 @@ export function TrackTable({
 }: Props) {
   const { favoriteIds, toggleFavorite } = useLibrary();
   const player = usePlayback();
+  const downloads = useDownloads();
+  const offlineIds = useMemo(
+    () => new Set(downloads.snapshot.items.map((entry) => entry.videoId)),
+    [downloads.snapshot],
+  );
   const hoverTimer = useRef<number | null>(null);
 
   useEffect(() => () => {
@@ -111,11 +117,22 @@ export function TrackTable({
               </button>
               {showCover ? <Cover className="tr-cover" src={smallThumb(item)} alt="" /> : null}
               <div className="tr-title-group">
-                <button className="tr-title" title={item.title} onClick={(event) => {
-                  event.stopPropagation();
-                  if (item.videoId) onPlay(index);
-                  else onOpen(item);
-                }}>{item.title}</button>
+                <div className="tr-title-row">
+                  <button className="tr-title" title={item.title} onClick={(event) => {
+                    event.stopPropagation();
+                    if (item.videoId) onPlay(index);
+                    else onOpen(item);
+                  }}>{item.title}</button>
+                  {videoId && offlineIds.has(videoId) ? (
+                    <span className="tr-offline" title="Скачано — играет без интернета" role="img" aria-label="Скачано">
+                      <ArrowDownToLine size={12} strokeWidth={2.2} aria-hidden />
+                    </span>
+                  ) : videoId && videoId in downloads.progress ? (
+                    <span className="tr-offline pending" title="Скачивается…" role="img" aria-label="Скачивается">
+                      <ArrowDownToLine size={12} strokeWidth={2.2} aria-hidden />
+                    </span>
+                  ) : null}
+                </div>
                 <div className="tr-mobile-artists">{artistNames}</div>
               </div>
             </div>

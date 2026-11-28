@@ -204,10 +204,18 @@ export interface SpotifyStatus {
 }
 
 /** One line of lyrics with the moment it starts, in milliseconds. */
+export interface LyricWord {
+  text: string;
+  startMs: number;
+  endMs: number;
+}
+
 export interface LyricLine {
   text: string;
   startMs: number;
   endMs: number | null;
+  /** Word timings when the source has them; the karaoke fill follows these. */
+  words?: LyricWord[] | null;
 }
 
 /** Lyrics as the backend found them: timed lines, or plain text only. */
@@ -237,4 +245,32 @@ export interface ArchivedPlaylist {
 export interface ArchiveState {
   archived: ArchivedPlaylist[];
   hasCover: boolean;
+}
+
+/** A favourite's audio kept on disk for offline listening. */
+export interface DownloadedTrack {
+  videoId: string;
+  title: string;
+  subtitle: string;
+  duration: number | null;
+  thumb: string | null;
+  path: string;
+  bytes: number;
+  /** The artwork was cached next to the audio. */
+  hasCover: boolean;
+}
+
+export interface DownloadsSnapshot {
+  items: DownloadedTrack[];
+  count: number;
+  bytes: number;
+}
+
+/** One download as it happens; the favourites line shows its percentage. */
+export interface DownloadProgress {
+  videoId: string;
+  state: "downloading" | "done" | "error";
+  received: number;
+  total: number | null;
+  message: string | null;
 }

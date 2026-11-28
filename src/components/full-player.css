@@ -534,3 +534,551 @@
     min-height: 23px;
   }
 }
+
+/* ------------------------------------------------------------- karaoke pane
+   The lyrics sit on the cover's own colours: no panel, no borders, no
+   scrollbar, and one bright line with the rest dimmed by distance. */
+
+.full-player .fp-karaoke {
+  position: relative;
+  overflow: hidden;
+  border: 0;
+  border-radius: 20px;
+  background: transparent;
+  isolation: isolate;
+}
+
+.full-player .fp-karaoke-glow {
+  position: absolute;
+  inset: -25%;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* The cover is there the moment the pane opens: no fade, so a new track never
+   flashes dark before the colours arrive. */
+.full-player .fp-karaoke-glow span {
+  position: absolute;
+  inset: 0;
+  background-position: center;
+  background-size: cover;
+  filter: blur(78px) saturate(1.45);
+  opacity: 0.75;
+  transform: scale(1.15);
+}
+
+.full-player .fp-karaoke-glow::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(120% 85% at 50% 34%, rgba(10, 8, 7, 0.18), rgba(10, 8, 7, 0.88) 78%),
+    linear-gradient(180deg, rgba(12, 10, 9, 0.42), rgba(12, 10, 9, 0.94));
+}
+
+.full-player .fp-karaoke-head,
+.full-player .fp-karaoke-scroll,
+.full-player .fp-karaoke-foot,
+.full-player .fp-karaoke-empty {
+  position: relative;
+  z-index: 1;
+}
+
+.full-player .fp-karaoke-head {
+  min-height: 34px;
+  padding: 4px clamp(16px, 2.6vw, 34px) 0;
+  border: 0;
+}
+
+.full-player .fp-karaoke h2 {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.full-player .fp-karaoke-follow {
+  min-height: 26px;
+  padding: 3px 9px;
+  border: 0;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--muted);
+  font-size: 11px;
+  transition: background 160ms ease, color 160ms ease, opacity 240ms ease;
+}
+
+.full-player .fp-karaoke-follow[data-following="true"] {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.full-player .fp-karaoke-follow:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--text);
+}
+
+.full-player .fp-karaoke-scroll {
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  overscroll-behavior: contain;
+  mask-image: linear-gradient(180deg, transparent 0, #000 13%, #000 82%, transparent 100%);
+}
+
+.full-player .fp-karaoke-scroll::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+/* Evenly spaced rows: no transform, one gap for every pair, so the text reads
+   as one column instead of blocks drifting apart. */
+.full-player .fp-karaoke-lines {
+  align-content: start;
+  gap: clamp(4px, 0.7dvh, 10px);
+  padding: 42cqh clamp(16px, 2.8vw, 36px) 48cqh;
+}
+
+/* The line that plays is pure white and a touch larger; the rest is grey and
+   smaller, so the eye follows the song the way it does in Yandex Music. */
+.full-player .fp-karaoke-lines li {
+  color: rgba(255, 255, 255, 0.56);
+  transform: scale(0.95);
+  transform-origin: left center;
+  transition:
+    color 520ms cubic-bezier(0.33, 0.8, 0.3, 1),
+    transform 620ms cubic-bezier(0.33, 0.8, 0.3, 1);
+}
+
+.full-player .fp-karaoke-lines li[data-state="active"] {
+  color: #ffffff;
+  transform: scale(1.06);
+}
+
+.full-player .fp-karaoke-lines li[data-distance="2"] {
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.full-player .fp-karaoke-lines li[data-distance="3"],
+.full-player .fp-karaoke-lines li[data-distance="4"] {
+  color: rgba(255, 255, 255, 0.26);
+}
+
+.full-player .fp-karaoke-line {
+  padding: 2px 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: inherit;
+  font-size: clamp(21px, 3.5vw, 46px);
+  font-weight: 760;
+  line-height: 1.14;
+  letter-spacing: -0.035em;
+  transition: color 260ms ease;
+}
+
+.full-player .fp-karaoke-line:hover,
+.full-player .fp-karaoke-line:focus-visible {
+  background: none;
+  color: var(--text);
+}
+
+.full-player .fp-karaoke-lines li[data-state="active"] .fp-karaoke-line {
+  color: #ffffff;
+  opacity: 1;
+}
+
+/* The fill is a gradient clipped to the glyphs, so the highlight glides
+   through a word instead of stepping at each frame. */
+.full-player .fp-karaoke-text {
+  display: inline;
+}
+
+.full-player .fp-karaoke-foot {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 2px 12px;
+  min-height: 30px;
+  padding: 4px clamp(12px, 2.25vw, 28px);
+  border-top: 1px solid #ffffff12;
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.full-player .fp-karaoke-foot span:last-child {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.full-player .fp-karaoke-note {
+  color: var(--muted);
+  font-size: 12px;
+  text-align: right;
+}
+
+.full-player .fp-karaoke-plain {
+  padding: clamp(12px, 2.7vw, 30px);
+  color: var(--text);
+  font-size: clamp(15px, 2.25vw, 24px);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  user-select: text;
+}
+
+.full-player .fp-karaoke-empty {
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 8px;
+  min-height: 0;
+  padding: 10px 16px;
+  overflow: auto;
+  color: var(--muted);
+  text-align: center;
+}
+
+.full-player .fp-karaoke-empty svg {
+  color: var(--accent);
+}
+
+.full-player .fp-karaoke-empty p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.full-player .fp-karaoke-scroll:focus-visible {
+  outline-offset: -2px;
+}
+
+@media (min-width: 501px) {
+  .full-player .fp-stage:not(.fp-stage--split) .fp-now {
+    grid-template-rows: minmax(0, 1fr);
+    min-height: 0;
+    max-height: 100%;
+  }
+
+  .full-player .fp-stage:not(.fp-stage--split) .fp-meta {
+    align-content: start;
+    min-height: 0;
+    max-height: 100%;
+    overflow: auto;
+    overscroll-behavior: contain;
+  }
+}
+
+@media (max-width: 680px) {
+  .full-player .fp-head {
+    min-height: 67px;
+    gap: 6px;
+  }
+
+  .full-player .fp-stage--split {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 10px;
+  }
+
+  .full-player .fp-stage--split .fp-now {
+    grid-template-columns: 42px minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+    gap: 10px;
+    max-height: min(25dvh, 120px);
+  }
+
+  .full-player .fp-stage--split .fp-art {
+    width: 42px;
+  }
+
+  .full-player .fp-stage--split .fp-cover {
+    border-radius: 7px;
+  }
+
+  .full-player .fp-stage--split .fp-meta {
+    gap: 2px;
+  }
+
+  .full-player .fp-controls .ctl {
+    width: 36px;
+    height: 36px;
+  }
+
+  .full-player .fp-controls .fp-play {
+    width: 46px;
+    height: 46px;
+  }
+}
+
+@media (max-width: 500px) {
+  .full-player .fp-head {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .full-player .fp-head-actions {
+    gap: 4px;
+  }
+
+  .full-player .fp-collapse,
+  .full-player .fp-queue-toggle {
+    gap: 0;
+    padding-inline: 7px;
+  }
+
+  .full-player .fp-kicker {
+    font-size: 9px;
+    letter-spacing: .1em;
+  }
+
+  .full-player .fp-stage:not(.fp-stage--split) .fp-now {
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: center;
+  }
+
+  .full-player .fp-stage:not(.fp-stage--split) .fp-art {
+    width: min(100%, 270px, 43dvh);
+    justify-self: center;
+  }
+
+  .full-player .fp-stage:not(.fp-stage--split) .fp-meta {
+    justify-items: center;
+    text-align: center;
+  }
+
+  .full-player .fp-footer-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .full-player .fp-controls {
+    grid-column: 1 / -1;
+  }
+
+  .full-player .fp-next {
+    grid-row: 2;
+  }
+
+  .full-player .fp-volume {
+    grid-column: 2;
+    grid-row: 2;
+  }
+}
+
+@media (max-height: 450px) {
+  .full-player .fp-head {
+    min-height: 62px;
+  }
+
+  .full-player .fp-stage {
+    padding-block: 8px;
+  }
+
+  .full-player .fp-footer {
+    padding-block: 3px 6px;
+  }
+
+  .full-player .fp-karaoke-head,
+  .full-player .fp-queue-head {
+    min-height: 35px;
+  }
+
+  .full-player .fp-karaoke-line {
+    font-size: clamp(19px, min(4vw, 7dvh), 38px);
+  }
+
+  .full-player .fp-karaoke-foot {
+    min-height: 23px;
+  }
+}
+
+/* ------------------------------------------------------------- karaoke pane
+   The lyrics sit on the cover's own colours: no panel, no borders, no
+   scrollbar, and one bright line with the rest dimmed by distance. */
+
+.full-player .fp-karaoke {
+  position: relative;
+  overflow: hidden;
+  border: 0;
+  border-radius: 20px;
+  background: transparent;
+  isolation: isolate;
+}
+
+.full-player .fp-karaoke-glow {
+  position: absolute;
+  inset: -25%;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* The cover is there the moment the pane opens: no fade, so a new track never
+   flashes dark before the colours arrive. */
+.full-player .fp-karaoke-glow span {
+  position: absolute;
+  inset: 0;
+  background-position: center;
+  background-size: cover;
+  filter: blur(78px) saturate(1.45);
+  opacity: 0.75;
+  transform: scale(1.15);
+}
+
+.full-player .fp-karaoke-glow::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(120% 85% at 50% 34%, rgba(10, 8, 7, 0.18), rgba(10, 8, 7, 0.88) 78%),
+    linear-gradient(180deg, rgba(12, 10, 9, 0.42), rgba(12, 10, 9, 0.94));
+}
+
+.full-player .fp-karaoke-head,
+.full-player .fp-karaoke-scroll,
+.full-player .fp-karaoke-foot,
+.full-player .fp-karaoke-empty {
+  position: relative;
+  z-index: 1;
+}
+
+.full-player .fp-karaoke-head {
+  min-height: 34px;
+  padding: 4px clamp(16px, 2.6vw, 34px) 0;
+  border: 0;
+}
+
+.full-player .fp-karaoke h2 {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.full-player .fp-karaoke-follow {
+  min-height: 26px;
+  padding: 3px 9px;
+  border: 0;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--muted);
+  font-size: 11px;
+  transition: background 160ms ease, color 160ms ease, opacity 240ms ease;
+}
+
+.full-player .fp-karaoke-follow[data-following="true"] {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.full-player .fp-karaoke-follow:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--text);
+}
+
+.full-player .fp-karaoke-scroll {
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  overscroll-behavior: contain;
+  mask-image: linear-gradient(180deg, transparent 0, #000 13%, #000 82%, transparent 100%);
+}
+
+.full-player .fp-karaoke-scroll::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+.full-player .fp-karaoke-line {
+  padding: 2px 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: inherit;
+  font-size: clamp(21px, 3.5vw, 46px);
+  font-weight: 760;
+  line-height: 1.14;
+  letter-spacing: -0.035em;
+  transition: color 260ms ease;
+}
+
+.full-player .fp-karaoke-line:hover,
+.full-player .fp-karaoke-line:focus-visible {
+  background: none;
+  color: var(--text);
+}
+
+.full-player .fp-karaoke-lines li[data-state="active"] .fp-karaoke-line {
+  color: #fff;
+}
+
+/* The fill is a gradient clipped to the glyphs, so the highlight glides
+   through a word instead of stepping at each frame. */
+/* The whole line that is playing is bright white; the part the voice has
+   already reached carries the accent, so the karaoke sweep stays visible
+   without dimming the line. */
+.full-player .fp-karaoke-word {
+  --karaoke: 0%;
+  --karaoke-sung: rgb(var(--tint-rgb));
+  --karaoke-unsung: #fff;
+  display: inline;
+}
+
+.full-player .fp-karaoke-word[data-active] {
+  background-image: linear-gradient(90deg, var(--karaoke-sung) var(--karaoke), #fff var(--karaoke));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.full-player .fp-karaoke-lines li[data-state="active"]
+  .fp-karaoke-line:not(:has(.fp-karaoke-word))
+  .fp-karaoke-text {
+  background-image: linear-gradient(90deg, var(--karaoke-sung) var(--karaoke), #fff var(--karaoke));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.full-player .fp-karaoke-foot {
+  min-height: 26px;
+  padding: 2px clamp(16px, 2.6vw, 34px) 8px;
+  border: 0;
+  color: var(--muted);
+  font-size: 11px;
+  opacity: 0.75;
+}
+
+.full-player .fp-karaoke-plain {
+  padding: clamp(16px, 3vw, 34px);
+  border: 0;
+  color: var(--text);
+  font-size: clamp(15px, 2.1vw, 22px);
+  line-height: 1.65;
+}
+
+.full-player .fp-karaoke-plain {
+  padding: 0;
+  white-space: normal;
+}
+
+.full-player .fp-karaoke-plain-lines {
+  display: grid;
+  gap: clamp(6px, 1.1dvh, 12px);
+  margin: 0;
+  padding: clamp(12px, 2.4vw, 26px) clamp(12px, 2.4vw, 26px) clamp(24px, 5vh, 52px);
+  list-style: none;
+}
+
+.full-player .fp-karaoke-plain-lines li {
+  color: rgba(255, 255, 255, 0.56);
+  font-size: clamp(17px, 2.3vw, 25px);
+  font-weight: 640;
+  line-height: 1.32;
+  letter-spacing: -0.015em;
+  overflow-wrap: anywhere;
+}

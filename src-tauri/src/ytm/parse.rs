@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 #[derive(Serialize, Clone, Debug, Default)]
@@ -1436,12 +1436,24 @@ pub fn detail(response: &Value) -> Detail {
 
 // --------------------------------------------------------------------- lyrics
 
-#[derive(Serialize, Clone, Debug, Default, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct LyricWord {
+    pub text: String,
+    pub start_ms: u64,
+    pub end_ms: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct LyricLine {
     pub text: String,
     pub start_ms: u64,
     pub end_ms: Option<u64>,
+    /// Word timings when the source carries them (enhanced LRC); the karaoke
+    /// fill follows these instead of the whole line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub words: Option<Vec<LyricWord>>,
 }
 
 #[cfg(test)]
@@ -1628,6 +1640,7 @@ pub fn lyrics_page(response: &Value) -> LyricsPage {
                 .and_then(|value| value.parse::<u64>().ok());
             match start {
                 Some(start) => lines.push(LyricLine {
+                    words: None,
                     text: text.to_string(),
                     start_ms: start,
                     end_ms: row

@@ -2,6 +2,7 @@ import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiFailure } from "./api";
+import { applyDownloads } from "./downloads";
 import { PlayerProvider, usePlayback, usePlayer } from "./player";
 import type { MediaItem } from "./types";
 
@@ -367,6 +368,27 @@ describe("queue and stream regressions", () => {
     expectStopped();
     expect(backend.streamUrl).not.toHaveBeenCalled();
     expect(backend.recommendations).not.toHaveBeenCalled();
+  });
+
+  it("plays a favourited track from its downloaded copy without asking for a stream", async () => {
+    applyDownloads({
+      count: 1,
+      bytes: 4_000_000,
+      items: [{
+        videoId: seed.videoId!,
+        title: seed.title,
+        subtitle: "",
+        duration: 180,
+        thumb: null,
+        path: "C:/downloads/seed.webm",
+        bytes: 4_000_000,
+        hasCover: true,
+      }],
+    });
+    await start([seed]);
+    expect(audio().src).toBe("http://localmedia.localhost/C%3A%2Fdownloads%2Fseed.webm");
+    expect(backend.streamUrl).not.toHaveBeenCalled();
+    applyDownloads({ count: 0, bytes: 0, items: [] });
   });
 
   it("clamps valid controls and ignores non-finite seek or volume values", async () => {

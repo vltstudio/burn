@@ -204,6 +204,7 @@ export function FullPlayer({ current, onClose }: { current: MediaItem; onClose: 
               current={current}
               artistName={artistName}
               progress={progress}
+              playing={player.playing}
               onSeek={player.seek}
             />
           ) : null}

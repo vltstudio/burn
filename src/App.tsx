@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { api, ApiFailure } from "./api";
 import { BackdropProvider, BackdropWash } from "./backdrop";
+import { DownloadsProvider } from "./downloads-provider";
 import { LibraryProvider } from "./library";
 import { PlayerBar } from "./components/PlayerBar";
 import { QuickPlayerBridge } from "./components/QuickPlayerBridge";
@@ -168,7 +169,8 @@ function Shell({
         <DiscordPresenceBridge key={String(discord.preferences.shareLocal)} shareLocal={discord.preferences.shareLocal} />
       ) : null}
       <ArtistNavProvider open={openArtist}>
-        <LibraryProvider auth={auth} onToast={toast}>
+        <DownloadsProvider>
+          <LibraryProvider auth={auth} onToast={toast}>
           {isTauri() && /Windows/i.test(navigator.userAgent) ? <QuickPlayerBridge /> : null}
           <div className="app">
           <Sidebar route={route} onNavigate={navigate} onOpen={openItem} />
@@ -231,7 +233,8 @@ function Shell({
             discord={discord}
           />
         </div>
-      </LibraryProvider>
+          </LibraryProvider>
+        </DownloadsProvider>
       </ArtistNavProvider>
     </BackdropProvider>
   );
