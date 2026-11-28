@@ -1054,3 +1054,25 @@
   font-size: clamp(15px, 2.1vw, 22px);
   line-height: 1.65;
 }
+
+.full-player .fp-karaoke-plain {
+  padding: 0;
+  white-space: normal;
+}
+
+.full-player .fp-karaoke-plain-lines {
+  display: grid;
+  gap: clamp(6px, 1.1dvh, 12px);
+  margin: 0;
+  padding: clamp(12px, 2.4vw, 26px) clamp(12px, 2.4vw, 26px) clamp(24px, 5vh, 52px);
+  list-style: none;
+}
+
+.full-player .fp-karaoke-plain-lines li {
+  color: rgba(255, 255, 255, 0.56);
+  font-size: clamp(17px, 2.3vw, 25px);
+  font-weight: 640;
+  line-height: 1.32;
+  letter-spacing: -0.015em;
+  overflow-wrap: anywhere;
+}

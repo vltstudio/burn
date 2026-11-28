@@ -351,12 +351,12 @@ async fn track_lyrics(
     album: Option<String>,
     duration: Option<u32>,
 ) -> Result<Lyrics> {
-    if let Some(id) = video_id.as_deref() {
-        // A downloaded favourite carries its lyrics, so this works with no
-        // connection at all.
-        if let Some(cached) = state.downloads.lyrics(id) {
-            return Ok(cached);
-        }
+    // A downloaded favourite carries its lyrics, so this works with no
+    // connection at all. Untimed text is re-asked for: providers add timings
+    // to songs they once only had as prose, and the cached copy is replaced.
+    let cached = video_id.as_deref().and_then(|id| state.downloads.lyrics(id));
+    if let Some(hit) = cached.as_ref().filter(|hit| hit.timed) {
+        return Ok(hit.clone());
     }
     let info = TrackInfo {
         title: title.unwrap_or_default(),
@@ -371,7 +371,13 @@ async fn track_lyrics(
     if let Some(hit) = state.lyrics.lock().await.get(&key).cloned() {
         return Ok(hit);
     }
-    let fetched = lyrics::fetch(&state.ytm, video_id.as_deref(), info).await?;
+    let fetched = match lyrics::fetch(&state.ytm, video_id.as_deref(), info).await {
+        Ok(fetched) => fetched,
+        Err(error) => match cached {
+            Some(hit) => return Ok(hit),
+            None => return Err(error),
+        },
+    };
     if let Some(id) = video_id.as_deref() {
         if state.downloads.find(id).is_some() {
             state.downloads.store_lyrics(id, &fetched);

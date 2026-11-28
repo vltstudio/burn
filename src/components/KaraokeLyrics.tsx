@@ -56,7 +56,11 @@ export function KaraokeLyrics({
     );
   }
 
-  const plain = lyrics?.plain?.trim();
+  const plainLines = (lyrics?.plain ?? "")
+    .split(String.fromCharCode(10))
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  const plain = plainLines.length > 0;
   return (
     <section className="fp-karaoke" aria-labelledby="fp-lyrics-heading" aria-busy={!result}>
       <LyricGlow artwork={artwork} />
@@ -66,7 +70,11 @@ export function KaraokeLyrics({
       </div>
       {plain ? (
         <div className="fp-karaoke-scroll fp-karaoke-plain" tabIndex={0} role="region" aria-label="Текст без синхронизации">
-          {plain}
+          <ol className="fp-karaoke-plain-lines">
+            {plainLines.map((line, index) => (
+              <li key={`${index}-${line.slice(0, 12)}`}>{line}</li>
+            ))}
+          </ol>
         </div>
       ) : (
         <div className="fp-karaoke-empty" role="status">
