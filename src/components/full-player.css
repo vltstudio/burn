@@ -641,14 +641,20 @@
   padding: 42cqh clamp(16px, 2.8vw, 36px) 48cqh;
 }
 
-/* The line that plays is pure white; the rest is grey, fading with distance. */
+/* The line that plays is pure white and a touch larger; the rest is grey and
+   smaller, so the eye follows the song the way it does in Yandex Music. */
 .full-player .fp-karaoke-lines li {
   color: rgba(255, 255, 255, 0.56);
-  transition: color 320ms cubic-bezier(0.22, 1, 0.36, 1);
+  transform: scale(0.95);
+  transform-origin: left center;
+  transition:
+    color 520ms cubic-bezier(0.33, 0.8, 0.3, 1),
+    transform 620ms cubic-bezier(0.33, 0.8, 0.3, 1);
 }
 
 .full-player .fp-karaoke-lines li[data-state="active"] {
   color: #ffffff;
+  transform: scale(1.06);
 }
 
 .full-player .fp-karaoke-lines li[data-distance="2"] {

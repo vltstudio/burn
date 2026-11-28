@@ -5,7 +5,7 @@ import type { Lyrics, MediaItem } from "../types";
 import { activeLineIndex, clockToSeconds } from "../ui/lyrics";
 import { smallThumb } from "../ui/format";
 
-const SCROLL_MS = 620;
+const SCROLL_MS = 780;
 
 export function KaraokeLyrics({
   current,
@@ -149,7 +149,8 @@ function TimedLyrics({
     const start = performance.now();
     const step = (now: number) => {
       const t = Math.min(1, (now - start) / SCROLL_MS);
-      const eased = 1 - Math.pow(1 - t, 5);
+      // In and out: the text eases away and settles, instead of shooting off.
+      const eased = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
       viewport.scrollTop = from + (target - from) * eased;
       if (t < 1) scrollFrame.current = requestAnimationFrame(step);
     };
